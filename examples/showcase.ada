@@ -181,6 +181,18 @@ let task1 = spawn fetch_service("auth", 5)
 let task2 = spawn 50
 println($"async={task1.await}/{await task2}/{[spawn 1, spawn 2].await_all()}")
 
+// M4：协作式调度 —— yield_now 的交错顺序是确定的（不含真实时间）
+mut trace = ""
+fn tracer(tag) {
+    for i in 2 { trace += tag
+        yield_now() }
+    tag
+}
+let trace_a = spawn tracer("a")
+let trace_b = spawn tracer("b")
+let traced = [trace_a, trace_b].await_all()
+println($"async_interleave={trace} tasks={traced} state={trace_a.state}")
+
 // ------------------------------------------------ M3 语义收紧（T3.1 / T3.5 / T3.6）
 println("-- semantics --")
 let frozen = 10

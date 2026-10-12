@@ -104,6 +104,15 @@ let counted = x => { calls += 1
 let mapped = [1, 2, 3].map(counted)
 println($"Adapter callbacks: {mapped}, call count: {calls}")
 
-// 9. 返回最后表达式计算值
+// 9. 协作式调度：并发任务只花最长时间 (M4 / T4.2 / T4.3)
+let conc_start = time.now_ms()
+fn slow_call(ms) { sleep_ms(ms)
+    ms }
+let calls = [spawn slow_call(40), spawn slow_call(40), spawn slow_call(40)]
+let call_results = calls.await_all()
+let conc_cost = time.now_ms() - conc_start
+println($"Concurrent sleeps: {call_results} in {conc_cost}ms (serial would be ~120ms)")
+
+// 10. 返回最后表达式计算值
 fib(10)
 

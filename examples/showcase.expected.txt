@@ -51,6 +51,7 @@ explicit=7/8/nil
 chars_with_idx=[[0, a], [1, b]]
 -- async syntax --
 async=10/50/[1, 2]
+async_interleave=abab tasks=[a, b] state=done
 -- semantics --
 immutable=10 mutable=11
 neg_index=3/c/nil tail_write=1
