@@ -10,7 +10,8 @@ pub struct Closure {
     pub proto: Arc<FunctionProto>,
     /// 捕获的 upvalue（T2.2）：每个捕获都是一个 `Value::Cell`，
     /// 因此闭包与外层函数共享同一个可写变量槽。
-    pub captures: Vec<Value>,
+    /// 捕获表：Arc 共享，闭包调用时只做一次引用计数（T6.2）
+    pub captures: Arc<Vec<Value>>,
 }
 
 impl PartialEq for Closure {

@@ -203,8 +203,9 @@ pub(crate) struct CallFrame {
     ip: usize,
     base_reg: usize,
     dst_reg: Option<usize>,
-    /// 当前闭包捕获的 upvalue 槽（T2.2）；主帧为空
-    captures: Vec<Value>,
+    /// 当前闭包捕获的 upvalue 槽（T2.2）；主帧为空。
+    /// T6.2：`Arc` 共享，调用时只做引用计数，不再每次克隆整个捕获表。
+    captures: Arc<Vec<Value>>,
 }
 
 pub struct Vm {
@@ -235,6 +236,12 @@ pub struct Vm {
     exec_started: std::time::Instant,
     /// 距离上次墙钟检查经过的指令数
     steps_since_clock_check: u64,
+    /// 是否需要计量（墙钟预算或指令计数开启时才为 true；热路径只判一次布尔）
+    metering: bool,
+    /// 是否统计指令数（T6.1/T6.5：确定性性能基线）
+    count_instructions: bool,
+    /// 本次执行已执行的指令数
+    instructions_executed: u64,
 }
 
 impl Default for Vm {
@@ -269,9 +276,27 @@ impl Vm {
             budget: MemoryBudget::with_limit(None),
             exec_started: std::time::Instant::now(),
             steps_since_clock_check: 0,
+            metering: false,
+            count_instructions: false,
+            instructions_executed: 0,
         };
         vm.apply_sandbox();
         vm
+    }
+
+    /// 开启指令计数（T6.1/T6.5：确定性性能基线，不受机器与负载影响）。
+    pub fn enable_instruction_counting(&mut self, enabled: bool) {
+        self.count_instructions = enabled;
+        self.refresh_metering();
+    }
+
+    /// 本次执行已执行的指令数（需先开启计数）。
+    pub fn instructions_executed(&self) -> u64 {
+        self.instructions_executed
+    }
+
+    fn refresh_metering(&mut self) {
+        self.metering = self.count_instructions || self.sandbox.max_wall_clock_ms.is_some();
     }
 
     /// 当前沙箱配置。
@@ -290,6 +315,7 @@ impl Vm {
                 self.denied_globals.push(name.to_string());
             }
         }
+        self.refresh_metering();
     }
 
     /// 切换沙箱配置并重建全局表（宿主在 `eval` 之间调用）。
@@ -400,7 +426,7 @@ impl Vm {
             ip: 0,
             base_reg: 0,
             dst_reg: None,
-            captures: Vec::new(),
+            captures: Arc::new(Vec::new()),
         });
 
         // T2.6：每次执行都从配置的预算重新装填燃料，
@@ -418,6 +444,8 @@ impl Vm {
         self.budget.reset();
         self.exec_started = std::time::Instant::now();
         self.steps_since_clock_check = 0;
+        self.instructions_executed = 0;
+        self.refresh_metering();
 
         let outcome = self.drive_current();
         self.run_scheduler(SchedulerGoal::MainDone, None, Some(outcome))
@@ -1437,9 +1465,12 @@ impl Vm {
 
     fn run_loop_until_exit(&mut self, stop_depth: usize) -> Result<LoopExit, VmError> {
         loop {
-            // M4：挂起点检查（指令循环唯一的安全退出点）
-            if let Some(reason) = self.suspend_request.take() {
-                return Ok(LoopExit::Suspended(reason));
+            // M4/T6.2：挂起点检查。先判 `is_some()`，避免每条指令都写回
+            // 一个 32 字节的 `Option<Suspend>`（`take()` 在 None 时也要写）。
+            if self.suspend_request.is_some() {
+                if let Some(reason) = self.suspend_request.take() {
+                    return Ok(LoopExit::Suspended(reason));
+                }
             }
 
             // Check Fuel
@@ -1450,17 +1481,37 @@ impl Vm {
                 *fuel -= 1;
             }
 
-            // M5：墙钟预算（每 4096 条指令检查一次，避免每条指令都取时钟）
-            self.steps_since_clock_check += 1;
-            if self.steps_since_clock_check >= WALL_CLOCK_CHECK_INTERVAL {
-                self.steps_since_clock_check = 0;
-                self.check_wall_clock()?;
+            // M5/T6.2：计量（墙钟预算 + 指令计数）合并为一次布尔判断，
+            // 关闭时热路径只多一条可预测分支。
+            if self.metering {
+                self.steps_since_clock_check += 1;
+                if self.count_instructions {
+                    self.instructions_executed += 1;
+                }
+                if self.steps_since_clock_check >= WALL_CLOCK_CHECK_INTERVAL {
+                    self.steps_since_clock_check = 0;
+                    self.check_wall_clock()?;
+                }
             }
 
             let frame_idx = self.frames.len() - 1;
-            let ip = self.frames[frame_idx].ip;
 
-            if ip >= self.frames[frame_idx].proto.instructions.len() {
+            // T6.2：一次借出帧，取出本条指令需要的全部信息（ip / base / 指令本体），
+            // 把热路径上的 `frames` 重复索引从 5 次降到 2 次。
+            let step = {
+                let frame = &self.frames[frame_idx];
+                if frame.ip >= frame.proto.instructions.len() {
+                    None
+                } else {
+                    Some((
+                        frame.ip,
+                        frame.base_reg,
+                        frame.proto.instructions[frame.ip].clone(),
+                    ))
+                }
+            };
+
+            let Some((ip, base, inst)) = step else {
                 // Implicit return nil if reached end of function
                 let frame = self.frames.pop().unwrap();
                 if let Some(dst) = frame.dst_reg {
@@ -1470,11 +1521,9 @@ impl Vm {
                     return Ok(LoopExit::Return(Value::Nil));
                 }
                 continue;
-            }
+            };
 
-            let inst = self.frames[frame_idx].proto.instructions[ip].clone();
-            self.frames[frame_idx].ip += 1;
-            let base = self.frames[frame_idx].base_reg;
+            self.frames[frame_idx].ip = ip + 1;
 
             match inst {
                 Instruction::LoadConst { dst, const_idx } => {
@@ -1516,15 +1565,19 @@ impl Vm {
                         (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 + y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
-                        // 字符串拼接：`s += x` 走的就是这条路径，因此必须计费（M5）
+                        // 字符串拼接：`s += x` 走的就是这条路径，因此必须计费（M5）。
+                        // T6.1 修正：按**增量**计费，而不是每次记下整串长度
+                        // （否则 `s += x` 循环会二次方消耗预算，正常脚本会被误杀）
                         (Value::String(x), y) => {
                             let joined = format!("{x}{y}");
-                            self.charge(joined.len())?;
+                            let growth = joined.len().saturating_sub(x.len());
+                            self.charge(growth)?;
                             Value::string(joined)
                         }
                         (x, Value::String(y)) => {
                             let joined = format!("{x}{y}");
-                            self.charge(joined.len())?;
+                            let growth = joined.len().saturating_sub(y.len());
+                            self.charge(growth)?;
                             Value::string(joined)
                         }
                         _ => return Err(VmError::TypeError(format!("Cannot add {a:?} and {b:?}"))),
@@ -2393,7 +2446,7 @@ impl Vm {
                     );
                     self.registers[base + dst.0 as usize] = Value::Closure(Arc::new(Closure {
                         proto: child_proto,
-                        captures: Vec::new(),
+                        captures: Arc::new(Vec::new()),
                     }));
                 }
 
@@ -2408,7 +2461,8 @@ impl Vm {
                     );
                     // T2.2：从连续寄存器窗口取出捕获（都是 Value::Cell）
                     let start = base + upvalue_start.0 as usize;
-                    let captures = self.registers[start..start + upvalue_count as usize].to_vec();
+                    let captures =
+                        Arc::new(self.registers[start..start + upvalue_count as usize].to_vec());
                     self.registers[base + dst.0 as usize] = Value::Closure(Arc::new(Closure {
                         proto: child_proto,
                         captures,
