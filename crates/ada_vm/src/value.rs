@@ -135,8 +135,45 @@ pub enum Value {
     /// 被闭包捕获的变量槽（T2.2）：内外共享同一个 `RwLock`，因此写入互相可见。
     /// 正常路径上不会泄漏到用户代码——只出现在局部寄存器与闭包捕获表里。
     Cell(Arc<RwLock<Value>>),
-    Task(Arc<RwLock<Value>>),
+    /// 协作式任务（M4）：`spawn` 创建，`await` 等待。
+    Task(Arc<crate::task::TaskCell>),
+    /// 需要 VM 配合的内建操作（M4）：可能挂起当前任务（`sleep_ms` / `await_all` …）。
+    /// `receiver` 为方法形式的接收者，调用点实参紧随其后。
+    Async {
+        kind: AsyncKind,
+        receiver: Option<Arc<Value>>,
+    },
     Iterator(Arc<RwLock<IteratorState>>),
+}
+
+/// 需要 VM 配合（可能挂起）的内建操作（M4）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AsyncKind {
+    /// `sleep_ms(ms)`：挂起到真实墙钟时刻
+    Sleep,
+    /// `yield_now()`：让出一次调度（不推进墙钟）
+    YieldNow,
+    /// `await_all([tasks])` / `arr.await_all()`：等全部结算
+    AwaitAll,
+    /// `await_any([tasks])` / `arr.await_any()`：等任一结算
+    AwaitAny,
+    /// `task.cancel()`：取消任务
+    TaskCancel,
+    /// `timeout(task, ms)` / `task.timeout(ms)`：超时取消并返回 `nil`（T4.5）
+    Timeout,
+}
+
+impl AsyncKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            AsyncKind::Sleep => "sleep_ms",
+            AsyncKind::YieldNow => "yield_now",
+            AsyncKind::AwaitAll => "await_all",
+            AsyncKind::AwaitAny => "await_any",
+            AsyncKind::TaskCancel => "cancel",
+            AsyncKind::Timeout => "timeout",
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -161,8 +198,29 @@ pub enum IteratorState {
 }
 
 impl Value {
-    pub fn task(val: Value) -> Self {
-        Value::Task(Arc::new(RwLock::new(val)))
+    /// 已完成的任务值（`spawn <非调用表达式>`）。
+    pub fn ready_task(id: crate::task::TaskId, label: impl Into<String>, val: Value) -> Self {
+        Value::Task(Arc::new(crate::task::TaskCell::done(id, label, val)))
+    }
+
+    /// 新建（尚未执行）的任务值。
+    pub fn new_task(
+        id: crate::task::TaskId,
+        label: impl Into<String>,
+        callee: Value,
+        args: Vec<Value>,
+    ) -> Self {
+        Value::Task(Arc::new(crate::task::TaskCell::new(
+            id, label, callee, args,
+        )))
+    }
+
+    /// 绑定式异步操作（方法形式）：接收者会被拼到调用实参之前。
+    pub fn bound_async(kind: AsyncKind, receiver: Value) -> Self {
+        Value::Async {
+            kind,
+            receiver: Some(Arc::new(receiver)),
+        }
     }
 
     pub fn iterator(state: IteratorState) -> Self {
@@ -307,10 +365,13 @@ impl Value {
             Value::NativeFn { name, .. } => {
                 serde_json::Value::String(format!("<native fn {name}>"))
             }
-            Value::Task(t) => t.read().unwrap().to_json(),
+            Value::Task(t) => serde_json::Value::String(format!("<task {}>", t.state().name())),
             Value::Iterator(_) => serde_json::Value::String("<iterator>".into()),
             Value::Intrinsic { kind, .. } => {
                 serde_json::Value::String(format!("<adapter {}>", kind.name()))
+            }
+            Value::Async { kind, .. } => {
+                serde_json::Value::String(format!("<async {}>", kind.name()))
             }
             Value::Cell(cell) => cell.read().unwrap().to_json(),
         }
@@ -358,11 +419,10 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
             (Value::Closure(a), Value::Closure(b)) => a == b,
             (Value::NativeFn { name: a, .. }, Value::NativeFn { name: b, .. }) => a == b,
-            (Value::Task(a), Value::Task(b)) => {
-                Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
-            }
+            (Value::Task(a), Value::Task(b)) => Arc::ptr_eq(a, b),
             (Value::Iterator(a), Value::Iterator(b)) => Arc::ptr_eq(a, b),
             (Value::Intrinsic { kind: a, .. }, Value::Intrinsic { kind: b, .. }) => a == b,
+            (Value::Async { kind: a, .. }, Value::Async { kind: b, .. }) => a == b,
             (Value::Cell(a), Value::Cell(b)) => {
                 Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
             }
@@ -389,9 +449,10 @@ impl fmt::Debug for Value {
             }
             Value::Closure(c) => write!(f, "{c:?}"),
             Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
-            Value::Task(t) => write!(f, "Task({:?})", t.read().unwrap()),
+            Value::Task(t) => write!(f, "<task #{} {} {}>", t.id, t.label, t.state().name()),
             Value::Iterator(it) => write!(f, "Iterator({:?})", it.read().unwrap()),
             Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Async { kind, .. } => write!(f, "<async {}>", kind.name()),
             Value::Cell(cell) => write!(f, "<cell {:?}>", cell.read().unwrap()),
         }
     }
@@ -441,9 +502,10 @@ impl fmt::Display for Value {
             }
             Value::Closure(c) => write!(f, "<fn {}>", c.proto.name),
             Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
-            Value::Task(t) => write!(f, "<task {}>", t.read().unwrap()),
+            Value::Task(t) => write!(f, "<task #{} {}>", t.id, t.state().name()),
             Value::Iterator(_) => write!(f, "<iterator>"),
             Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Async { kind, .. } => write!(f, "<async {}>", kind.name()),
             Value::Cell(cell) => write!(f, "{}", cell.read().unwrap()),
         }
     }

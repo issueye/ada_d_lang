@@ -270,9 +270,18 @@ pub enum Instruction {
         dst: Reg,
         future: Reg,
     },
+    /// 创建**尚未执行**的任务（M4 / T4.1）：`callee` 与 `arg_start..+arg_count`
+    /// 是调用目标与实参，任务首次被调度时才真正执行。
     Spawn {
         dst: Reg,
-        expr: Reg,
+        callee: Reg,
+        arg_start: Reg,
+        arg_count: u16,
+    },
+    /// `spawn <非调用表达式>`：值在 spawn 点求值，任务直接处于完成态。
+    SpawnValue {
+        dst: Reg,
+        src: Reg,
     },
 
     // Iterators

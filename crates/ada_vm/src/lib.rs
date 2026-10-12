@@ -1,8 +1,10 @@
 pub mod builtins;
+pub mod task;
 pub mod value;
 pub mod vm;
 
-pub use value::{Closure, NativeCallback, Value};
+pub use task::{TaskCell, TaskState};
+pub use value::{AsyncKind, Closure, NativeCallback, Value};
 pub use vm::{Vm, VmError};
 
 #[cfg(test)]

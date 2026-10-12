@@ -1576,11 +1576,42 @@ impl Compiler {
             }
 
             Expr::Spawn { expr, .. } => {
-                let r_inner = self.alloc_reg()?;
-                self.compile_expr(expr, r_inner)?;
-                self.proto
-                    .emit(Instruction::Spawn { dst, expr: r_inner }, span);
-                self.free_reg(r_inner);
+                // T4.1：`spawn f(a, b)` 只捕获调用目标与实参，不在此处执行；
+                // 非调用表达式（`spawn 50`）在 spawn 点求值并直接成为完成态任务。
+                match &**expr {
+                    Expr::Call { callee, args, .. } => {
+                        let r_callee = self.alloc_reg()?;
+                        self.compile_expr(callee, r_callee)?;
+
+                        let arg_start = Reg(self.next_reg);
+                        for arg in args {
+                            let r_arg = self.alloc_reg()?;
+                            self.compile_expr(arg, r_arg)?;
+                        }
+
+                        self.proto.emit(
+                            Instruction::Spawn {
+                                dst,
+                                callee: r_callee,
+                                arg_start,
+                                arg_count: args.len() as u16,
+                            },
+                            span,
+                        );
+
+                        for _ in args {
+                            self.next_reg -= 1;
+                        }
+                        self.free_reg(r_callee);
+                    }
+                    other => {
+                        let r_inner = self.alloc_reg()?;
+                        self.compile_expr(other, r_inner)?;
+                        self.proto
+                            .emit(Instruction::SpawnValue { dst, src: r_inner }, span);
+                        self.free_reg(r_inner);
+                    }
+                }
             }
         }
         Ok(())

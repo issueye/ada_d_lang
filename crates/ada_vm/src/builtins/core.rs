@@ -1,4 +1,4 @@
-use crate::value::{AdapterKind, IteratorState, Value};
+use crate::value::{AdapterKind, AsyncKind, IteratorState, Value};
 use std::collections::HashMap;
 
 pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
@@ -49,7 +49,10 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 Value::String(_) => "string",
                 Value::Array(_) => "array",
                 Value::Map(_) => "map",
-                Value::Closure(_) | Value::NativeFn { .. } | Value::Intrinsic { .. } => "function",
+                Value::Closure(_)
+                | Value::NativeFn { .. }
+                | Value::Intrinsic { .. }
+                | Value::Async { .. } => "function",
                 Value::Task(_) => "task",
                 Value::Iterator(_) => "iterator",
                 // 内部值：不应出现在用户可见路径，降级为底层类型名
@@ -440,61 +443,19 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
     );
 
     // -------------------------------------------------------------
-    // 7. Async Primitives
+    // 7. Async Primitives（M4：由 VM 调度器实现，可挂起）
     // -------------------------------------------------------------
-    globals.insert(
-        "sleep_ms".to_string(),
-        Value::native_fn("sleep_ms", |args| {
-            if let Some(ms) = args.first().and_then(|a| a.as_int()) {
-                std::thread::sleep(std::time::Duration::from_millis(ms as u64));
-            }
-            Ok(Value::Nil)
-        }),
-    );
-
-    globals.insert(
-        "await_all".to_string(),
-        Value::native_fn("await_all", |args| {
-            if args.is_empty() {
-                return Ok(Value::array(Vec::new()));
-            }
-            if let Value::Array(arr) = &args[0] {
-                let items = arr.read().unwrap();
-                let mut res = Vec::with_capacity(items.len());
-                for item in items.iter() {
-                    match item {
-                        Value::Task(t) => res.push(t.read().unwrap().clone()),
-                        other => res.push(other.clone()),
-                    }
-                }
-                Ok(Value::array(res))
-            } else {
-                Err("await_all expects an array of tasks".to_string())
-            }
-        }),
-    );
-
-    globals.insert(
-        "await_race".to_string(),
-        Value::native_fn("await_race", |args| {
-            if args.is_empty() {
-                return Ok(Value::Nil);
-            }
-            if let Value::Array(arr) = &args[0] {
-                let items = arr.read().unwrap();
-                if let Some(first) = items.first() {
-                    match first {
-                        Value::Task(t) => Ok(t.read().unwrap().clone()),
-                        other => Ok(other.clone()),
-                    }
-                } else {
-                    Ok(Value::Nil)
-                }
-            } else {
-                Err("await_race expects an array of tasks".to_string())
-            }
-        }),
-    );
+    let async_op = |kind| Value::Async {
+        kind,
+        receiver: None,
+    };
+    globals.insert("sleep_ms".to_string(), async_op(AsyncKind::Sleep));
+    globals.insert("yield_now".to_string(), async_op(AsyncKind::YieldNow));
+    globals.insert("await_all".to_string(), async_op(AsyncKind::AwaitAll));
+    globals.insert("await_any".to_string(), async_op(AsyncKind::AwaitAny));
+    globals.insert("timeout".to_string(), async_op(AsyncKind::Timeout));
+    // 旧名为 await_race，语义等同 await_any
+    globals.insert("await_race".to_string(), async_op(AsyncKind::AwaitAny));
 }
 
 /// 注册迭代器适配器（T2.1）为全局函数，使管道形式可用：
