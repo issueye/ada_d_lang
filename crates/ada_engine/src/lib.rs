@@ -1,6 +1,9 @@
 use ada_bytecode::Compiler;
 use ada_parser::Parser;
-use ada_vm::{Value, Vm, VmError};
+// 公共 re-export：宿主只需依赖 ada_engine 即可命名 Value 与各类错误类型（T0.7）
+pub use ada_bytecode::CompileError;
+pub use ada_parser::ParseError;
+pub use ada_vm::{Closure, NativeCallback, Value, Vm, VmError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
