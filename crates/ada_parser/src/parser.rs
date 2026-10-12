@@ -546,9 +546,13 @@ impl Parser {
                 InterpPart::Lit(s) => ast_parts.push(StringPart::Lit(s)),
                 InterpPart::Code(code, span) => {
                     // T3.4：把片段内解析出的位置映射回源文件，使插值里的错误
-                    // 也能指向正确行列
+                    // 也能指向正确行列（含多行与词法错误，见
+                    // `crates/ada_parser/tests/interpolation_positions.rs`）
                     let mut sub_parser = Parser::from_fragment(&code, span)?;
-                    let expr = sub_parser.parse_expr()?;
+                    // T8.1：位置已经正确，但片段是独立解析的，所以用户看到的是
+                    // `}` 处的 `<EOF>`，容易误解。这里只**补充说明**：不改动位置，
+                    // 也不覆盖原有的期望记号（`$"{(1}"` 的期望是 `)` 而不是 `}`）。
+                    let expr = sub_parser.parse_expr().map_err(add_interpolation_context)?;
                     ast_parts.push(StringPart::Expr(expr));
                 }
             }
@@ -1209,5 +1213,36 @@ impl Parser {
                 col: tok.span.col,
             })
         }
+    }
+}
+
+/// T8.1：给"插值片段内输入意外结束"的报错补上上下文。
+///
+/// 片段（`${...}` 里的代码）是独立解析的，因此用户看到的是 `}` 位置的
+/// `<EOF>`。位置保持不变，只把插值的边界说清楚。
+fn add_interpolation_context(err: ParseError) -> ParseError {
+    const HINT: &str = " (inside this `${…}` interpolation, which ends at the next `}`)";
+    match err {
+        ParseError::UnexpectedEof {
+            expected,
+            line,
+            col,
+        } => ParseError::UnexpectedEof {
+            expected: format!("{expected}{HINT}"),
+            line,
+            col,
+        },
+        ParseError::UnexpectedToken {
+            found,
+            expected,
+            line,
+            col,
+        } if found == "<EOF>" => ParseError::UnexpectedToken {
+            found,
+            expected: format!("{expected}{HINT}"),
+            line,
+            col,
+        },
+        other => other,
     }
 }
