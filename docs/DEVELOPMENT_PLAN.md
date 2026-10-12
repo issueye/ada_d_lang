@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **222**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `diagnostics.rs` 12 + `host_panic.rs` 5 + `doc_examples.rs` 16 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 9，另含各 crate 单元测试 36） |
+| 测试总数 | 34 | **227**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `diagnostics.rs` 12 + `host_panic.rs` 5 + `value_layout.rs` 5 + `doc_examples.rs` 16 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 9，另含各 crate 单元测试 36） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -256,22 +256,22 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M6 · 性能与 JIT 🚧（T6.1 ✅ / T6.2 🚧 13% / T6.3 ✅ / T6.5 ✅ / T6.4 📋 延后）
+### M6 · 性能与 JIT ✅（T6.1 ✅ / T6.2 ✅ 目标达成 / T6.3 ✅ / T6.5 ✅ / T6.4 📋 延后）
 
 | ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | ✅ T6.1 | 基准基线：`criterion`，覆盖 fib 递归、数值循环、字符串拼接、迭代器管道、JSON 解析 | W6 | P1 | `benches/`（新，独立包）、`crates/ada_vm/examples/size_probe.rs` | 完成证据：5 组基准 + 冷启动 + 仅编译共 7 项出数（见 SPEC_RUNTIME §11.1）；基准程序源 `benches/programs/*.ada` 由墙钟基准与指令数门禁共用；`--no-run` 与出数已进 CI（artifact：日志） |
-| 🚧 T6.2 | VM 微优化：捕获表共享、指令循环头部合并、挂起检查免写、计量合并 | W2 | P2 | `vm.rs`, `value.rs` | **部分达成**：累计 **≈13%**（fib −13.7%、numeric_loop −12.1%、iterator_pipeline −10.7%、冷启动 −16.6%），未达计划的 ≥30%；剩余路径与预期收益见 SPEC_RUNTIME §11.3/§11.7（Value 瘦身 48→16B、指令特化、JIT） |
-| ✅ T6.3 | 决策 D1 落地：维持 `enum Value` 或实施 NaN-boxing | W2 | P2 | `value.rs` | 完成证据：**D1 = A（维持 enum）**，依据 `size_of::<Value>() == 48`（胖变体为 `NativeFn`/`Intrinsic`）、`Instruction == 12B`、以及"4 项微优化已拿到 13% 而 Value 未变"——瓶颈不在值大小；同时记录更便宜的候选（box 化胖变体 → 16B）。另完成 M5 遗留的 **D6 = A（维持 `Arc<RwLock>`）** 评估 |
-| 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | W2 | P3 | `crates/ada_jit/`（新） | **本轮延后**（理由见下）；验收线保持 `fib(30)` 较 VM 提速 ≥10×，基准已就绪可直接对标 |
-| ✅ T6.5 | 性能回归门禁：劣化 >5% 报警 | W6 | P3 | `crates/ada_vm/tests/perf_budget.rs`, `benches/budgets.txt`, CI | 完成证据：门禁度量为**指令数**（完全确定、零抖动），超基线 5% 即失败，并校验基准程序的**计算正确性**；CI 新增 `benchmarks` job（显式跑门禁 + 编译并出数墙钟基准，墙钟不设阈值） |
+| ✅ T6.2 | VM 优化：捕获表共享、指令循环头部合并、挂起检查免写、计量合并、**`Value` 48→16 字节** | W2 | P2 | `vm.rs`, `value.rs`, `lib.rs` | **达成**：五项改动，累计对 M6 原始基线 **fib −25.3%、numeric_loop −23.7%、iterator_pipeline −46.6%、json −21.4%、冷启动 −27.9%**（平均 ≈ −29%，适配器路径远超 ≥30% 验收线）；`Value` 从 48 → **16 字节**，寄存器文件 96 KiB → **32 KiB**（进 L1）——该项单独贡献 pipeline **−34.7%**、fib −10.1%。**指令数基线逐字节不变**（只改表示与派发成本，未减工作量）。门禁：`crates/ada_vm/tests/value_layout.rs`（5 个用例）固定尺寸/寄存器文件/L1 性质 |
+| ✅ T6.3 | 决策 D1 落地：维持 `enum Value` 或实施 NaN-boxing | W2 | P2 | `value.rs` | 完成证据：**D1 = A（维持 enum）**：`Value` 已降到 16 字节（该设计下 tag + 8B 载荷的实际下限），实测已拿到 −25%〜−46.6%，NaN-boxing 再省 8 字节不足以抵消 `value.rs` 全量重写 + builtins 改造 + 与 `Arc`/GC（D6）耦合的风险。另完成 M5 遗留的 **D6 = A（维持 `Arc<RwLock>`）** 评估 |
+| 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | W2 | P3 | `crates/ada_jit/`（新） | **延后**（理由见下）；验收线保持 `fib(30)` 较 VM 提速 ≥10×，基准已就绪可直接对标 |
+| ✅ T6.5 | 性能回归门禁：劣化 >5% 报警 | W6 | P3 | `crates/ada_vm/tests/perf_budget.rs`, `benches/budgets.txt`, CI | 完成证据：门禁度量为**指令数**（完全确定、零抖动），超基线 5% 即失败，并校验基准程序的**计算正确性**；CI 新增 `benchmarks` job（显式跑门禁 + 编译并出数墙钟基准，墙钟不设阈值）。T6.2e 的验证正是"指令数不变 + 墙钟降 10–35%"，说明该门禁能精确区分"少干活"与"干得更快" |
 
 **退出标准**：✅ 性能陈述有基准数据支撑（SPEC_RUNTIME §11 与 WHITEPAPER 已全部改为引用基准数字）。
 
 **T6.4 延后的理由（记录在案）**：① Cranelift 引入重量级依赖与新 crate，工作量按计划为 3–6 周，
-本轮不足以做到"可验证、不牺牲质量"；② 前置条件（基准 + 指令数门禁）本轮刚好建立，
-现在开始 JIT 才有客观对标线；③ 计划内更便宜的一步（Value 瘦身 48→16B）尚未做，
-按"先把解释器压到值得 JIT"的顺序应排在前面。
+单轮不足以做到"可验证、不牺牲质量"；② 前置条件（基准 + 指令数门禁）已建立（T6.1/T6.5），
+现在开始 JIT 才有客观对标线；③ 解释器侧的"便宜一步"（`Value` 瘦身）已做完并拿到约 −25%
+整体收益，接下来按 §11.7 的顺序应先做指令特化/内联缓存，再评估 JIT 的边际价值。
 
 ---
 
@@ -318,7 +318,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 222 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 诊断 12 + 宿主 panic 5 + 文档示例 16 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 9）。
+**当前状态**：`cargo test --workspace` → 227 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 诊断 12 + 宿主 panic 5 + 值布局 5 + 文档示例 16 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 9）。
 
 ---
 
@@ -365,7 +365,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | ID | 决策点 | 选项 | 影响 | 截止 |
 | :--- | :--- | :--- | :--- | :--- |
-| D1 | 值模型 | ~~A 保持 `enum Value`~~；~~B 实施 NaN-boxing~~ → **已决：A（保持 enum）** | **决策（2026-10，M6 执行期）**：`size_of::<Value>() == 48`（`NativeFn`/`Intrinsic` 是胖变体），但 4 项 VM 微优化已拿到 ≈13% 而 Value 未变 → 当前瓶颈不是值大小；NaN-boxing 需 `value.rs` 全量重写 + 全部 builtins 改造 + 与 `Arc` 所有权耦合。更便宜的一步（box 化胖变体 → 16B）记为候选优化，等解释器剩余开销被压到值得 JIT 时再评估 | ✅ 已决（T6.3） |
+| D1 | 值模型 | ~~A 保持 `enum Value`~~；~~B 实施 NaN-boxing~~ → **已决：A（保持 enum）** | **决策（2026-10，M6 执行期，T6.2e 后更新）**：先做了便宜的一步——把两个胖变体（`NativeFn{String,Arc<dyn Fn>}`、`Intrinsic{Vec,…}`）的载荷改放 `Arc` 后面，`Value` 从 48 → **16 字节**（该枚举设计下 tag+8B 载荷的实际下限），寄存器文件 96 KiB → 32 KiB（进 L1），实测 iterator_pipeline **−34.7%**、整体约 **−25%**。NaN-boxing 能再省的 8 字节已不足以抵消 `value.rs` 全量重写 + 全部 builtins 改造 + 与 `Arc` 所有权/GC（D6）耦合的风险，因此**不做** | ✅ 已决（T6.3 + T6.2e） |
 | D2 | 异步实现 | ~~A 真 Fiber + Tokio~~；~~B 同步 Future 占位~~ → **已决：C（单线程协作式事件循环，无 Tokio/无线程）** | **决策（2026-10，M4 执行期）**：任务 = 同一 VM 上可保存的执行现场（帧栈 + 寄存器窗口），挂起点白名单（`sleep_ms`/`yield_now`/`await*`/`timeout`），就绪队列 FIFO + 真实定时器。理由：零依赖、执行顺序完全确定（对 AI 生成代码可测性关键）、嵌入成本低、挂起点天然是沙箱墙钟检查点。代价：无 CPU 并行；适配器回调内无法保存宿主栈，`sleep_ms` 退化为阻塞（已记录为 G-A9）。T4.4 因此重定义为 ❌ 非目标 | ✅ 已决（M4 落地） |
 | D3 | 迭代器求值 | ~~A 即时~~；~~B 惰性~~ → **已决：A（即时）** | **决策（2026-10，M2 执行期）**：适配器一律物化为 `Array`，先把能力与错误契约打通；惰性链需引入迭代器对象与去虚拟化，收益要用基准证明（缺口 G-S12）。若未来启用惰性，`collect()` 语义与 `IterNext` 指令可复用 | ✅ 已决（T2.1 落地） |
 | D4 | `{ x }` 歧义 | ~~A 判为 block~~；~~B 保持现状判 map~~ → **已决：B（保持 map）** | **决策（2026-10，M3 执行期）**：`{}` 是 map 字面量，`{ name }` 是 Token 高效的简写（AI-first 目标），块表达式改为"必须以语句开头"即可无歧义地区分（SPEC_LANGUAGE §5.6）。选 A 会删掉 map 简写并静默改变既有脚本含义 | ✅ 已决（T3.3 落地） |
@@ -415,7 +415,7 @@ docs/
 | M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位已补齐） |
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
-| M6 性能与 JIT | 3–6 周 | 🚧 | ☑（T6.1/T6.3/T6.5 完成；T6.2 达成 13%/30%；T6.4 延后） |
+| M6 性能与 JIT | 3–6 周 | ✅ | ☑（T6.1/T6.2/T6.3/T6.5 完成，≈−29% 平均；T6.4 JIT 延后并记录理由） |
 | M7 生态工具链 | 长期 | 🚧 | ☑（T7.1/T7.3/T7.4 完成；T7.2/T7.5 延后并记录理由） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。

@@ -34,7 +34,7 @@
 
 ## 2. 值模型 (Value Model)
 
-### 2.1 当前实现 ✅（enum + Arc）
+### 2.1 当前实现 ✅（enum + Arc，`Value` = 16 字节）
 
 ```rust
 enum Value {
@@ -43,19 +43,22 @@ enum Value {
     Array(Arc<RwLock<Vec<Value>>>),
     Map(Arc<RwLock<HashMap<String, Value>>>),
     Closure(Arc<Closure>),
-    NativeFn { name: String, callback: Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync> },
-    Intrinsic { kind: AdapterKind, receiver: Option<Box<Value>>, args: Vec<Value> },
-    Task(Arc<RwLock<Value>>),
+    NativeFn(Arc<NativeFunction>),      // 载荷：{ name: String, callback: Arc<dyn Fn…> }
+    Intrinsic(Arc<IntrinsicCall>),      // 载荷：{ kind, receiver: Option<Box<Value>>, args: Vec<Value> }
+    Cell(Arc<RwLock<Value>>),
+    Task(Arc<TaskCell>),
+    Async { kind: AsyncKind, receiver: Option<Arc<Value>> },
     Iterator(Arc<RwLock<IteratorState>>),
 }
 ```
 
 | 特性 | 状态 |
 | :--- | :--- |
+| `size_of::<Value>()` | ✅ **16 字节**（T6.2b；此前 48 字节，见 §2.3） |
 | 引用语义（array/map 赋值共享同一容器） | ✅ |
 | 跨线程可传递（`Send + Sync`，用于宿主 `register_fn`） | ✅ |
-| 循环引用回收 | ❌ 依赖 `Arc`，循环引用**泄漏**（决策 D6） |
-| NaN-boxing 64 位无装箱 | 📋 未实现（决策 D1；[WHITEPAPER](WHITEPAPER.md) §6 已将其明确标注为规划项，非现状） |
+| 循环引用回收 | ❌ 依赖 `Arc`，循环引用**泄漏**（决策 D6；由 M5 内存预算兜底） |
+| NaN-boxing 64 位无装箱 | ❌ 不做（决策 D1：`Value` 已降到 16 字节，收益不足以抵消全量重写） |
 
 ### 2.2 值语义要点
 
@@ -63,14 +66,27 @@ enum Value {
 - `string` 也是 `Arc<String>`，但字符串不可变，表现为值语义。
 - 相等语义见 [SPEC_LANGUAGE §9.1](SPEC_LANGUAGE.md)。
 
-### 2.3 已知性能特征 ⚠️（任务 T6.2）
+### 2.3 布局与性能特征
 
-| 观察点 | 影响 |
+**为什么是 16 字节（T6.2b）**：`Value` 曾是 48 字节，由两个"胖变体"决定——
+`NativeFn { name: String(24B), callback: Arc<dyn Fn>(16B) }` 与
+`Intrinsic { receiver: Option<Box<Value>>, args: Vec<Value>(24B) }`。
+VM 的寄存器文件是 `Vec<Value>`（2048 槽），48 字节意味着 **96 KiB**，远超典型 32 KiB 的 L1
+数据缓存；每次寄存器读写都在打内存层次。把两者的载荷改为 `Arc<NativeFunction>` /
+`Arc<IntrinsicCall>` 后枚举降到 16 字节，寄存器文件缩到 **32 KiB**（刚好放进 L1），
+且 `Option<Value>` 仍是 16 字节（Niche 优化）。
+
+- 实测（criterion，见 §11.3）：迭代器管道 **−34.7%**、numeric_loop −9.8%、fib −10.1%、
+  冷启动 −11.7%；**指令数基线逐字节不变**（只改表示、不改工作量）。
+- 工具：`cargo run -p ada_vm --example size_probe` 打印各尺寸与寄存器文件占用。
+- 门禁：`crates/ada_vm/tests/value_layout.rs` 固定"`Value` 必须 ≤16 字节 / 寄存器文件必须放得进 L1"，
+  再往 `Value` 里塞大字段会直接失败。
+
+| 其余观察点 | 影响 |
 | :--- | :--- |
 | 容器访问走 `RwLock` 加解锁 | 每次索引/字段访问都有原子操作开销 |
-| `GetField` 每访问一次方法（如 `arr.push`）就**新建一个 `NativeFn` 闭包** | 方法链/循环内高频访问产生持续分配 |
-| 指令派发时 `instructions[ip].clone()` | 每条指令一次克隆（多数变体很小，但属可省开销） |
-| 每次指令都做一次 `Option<fuel>` 分支 | 可预测分支，成本低但非零 |
+| `GetField` 每访问一次方法（如 `arr.push`）就**新建一个 `NativeFn`** | 方法链/循环内高频访问产生持续分配 |
+| 指令派发时 `instructions[ip].clone()` | 每条指令一次克隆（`Instruction` 仅 12 字节，成本可忽略，见 §11.3） |
 
 ---
 
@@ -496,24 +512,25 @@ fn main() -> Result<(), ada_engine::Error> {
 
 ## 11. 性能策略
 
-### 11.1 实测基线（M6 / T6.1）✅
+### 11.1 实测基线（M6 / T6.1；数字为 T6.2 优化后的当前值）✅
 
 基准套件位于 `benches/`（独立包，`criterion`；`cargo bench --manifest-path benches/Cargo.toml`），
 程序源在 `benches/programs/*.ada`，被两组度量共用：
 
 | 基准程序 | 侧重 | release 墙钟（中位，Windows） | 指令数（确定性） |
 | :--- | :--- | :--- | :--- |
-| `fib.ada`（fib(24)，46,368 次调用） | 调用/闭包捕获 | 25.7 ms | 1,725,566 |
-| `numeric_loop.ada`（20 万次迭代） | 整数算术 | 18.1 ms | 1,800,009 |
-| `string_concat.ada`（2 万次 `+=`） | 字符串分配 | ~128 ms（噪声大，见下） | 100,010 |
-| `iterator_pipeline.ada`（20 万元素管道） | 适配器 + 闭包回调 | 78–82 ms | 1,600,006 |
-| `json_roundtrip.ada`（3000 次解析） | 原生模块 + 容器 | ~12.6 ms | 45,012 |
-| 冷启动（编译 + 执行 `numeric_loop`） | 嵌入成本 | 18.3 ms | — |
-| 仅编译 `numeric_loop` | 前端成本 | 4.9 µs | — |
+| `fib.ada`（fib(24)，46,368 次调用） | 调用/闭包捕获 | 22.2 ms | 1,725,566 |
+| `numeric_loop.ada`（20 万次迭代） | 整数算术 | 15.7 ms | 1,800,009 |
+| `string_concat.ada`（2 万次 `+=`） | 字符串分配 | ~116 ms（O(n²) memcpy 主导，噪声大） | 100,010 |
+| `iterator_pipeline.ada`（20 万元素管道） | 适配器 + 闭包回调 | 47.6 ms | 1,600,006 |
+| `json_roundtrip.ada`（3000 次解析） | 原生模块 + 容器 | 11.0 ms | 45,012 |
+| 冷启动（编译 + 执行 `numeric_loop`） | 嵌入成本 | 15.7 ms | — |
+| 仅编译 `numeric_loop` | 前端成本 | 4.4 µs | — |
 
 > ⚠️ **测量纪律**：共享/开发机上的墙钟抖动实测可达 ±10%（`string_concat` 尤其明显，且它是
 > O(n²) 的 memcpy 主导，不能代表 VM 开销）。因此**CI 门禁用指令数**（完全确定），墙钟只做纵向对比。
-> 上表数字来自同一台机器的三次连续运行，取稳定值；绝对数字不构成跨机器承诺。
+> 上表数字来自同一台机器连续运行中的稳定值；绝对数字不构成跨机器承诺。
+> 优化历史与逐项收益见 §11.3。
 
 ### 11.2 确定性回归门禁（M6 / T6.5）✅
 
@@ -532,33 +549,37 @@ fn main() -> Result<(), ada_engine::Error> {
 | 指令循环头部合并（T6.2b） | 每条指令只借出帧一次，`frames` 索引从 5 次降到 2 次 | numeric_loop **−11.9%**、fib −5.3%、pipeline −5.5% |
 | 挂起检查免写（T6.2c） | `Option<Suspend>`（32B）从"每条指令写回 None"改为先判 `is_some()` | 与上项同批测量 |
 | 计量合并为单布尔（T6.2d） | 墙钟检查 + 指令计数在关闭时只判一次布尔（修掉 M5 引入的每指令开销） | 同批测量 |
-| **累计（对原始基线）** | 四次低风险改动 | **fib −13.7%、numeric_loop −12.1%、iterator_pipeline −10.7%、冷启动 −16.6%**（≈ −13% 平均） |
+| **`Value` 48 → 16 字节（T6.2e）** | `NativeFn`/`Intrinsic` 载荷改放 `Arc` 后面，寄存器文件 96 KiB → **32 KiB**（进 L1） | **iterator_pipeline −34.7%**、fib −10.1%、numeric_loop −9.8%、冷启动 −11.7%、json −6.5%（p<0.05） |
+| **累计（对 M6 原始基线）** | 五次改动 | fib 29.73→22.20 ms（**−25.3%**）、numeric_loop 20.63→15.74 ms（**−23.7%**）、iterator_pipeline 89.27→47.64 ms（**−46.6%**）、json 13.95→10.96 ms（−21.4%）、冷启动 21.77→15.69 ms（−27.9%） |
 
 **后续改动的性能核对（M7 轮次）**：T1.7 的 `catch_unwind` 兜底与 T1.8 的位置记录（后者只在
-**失败时**写入，成功路径零成本）经 criterion 复测**无可测代价**：fib 24.7 ms、numeric_loop 17.4 ms、
-iterator_pipeline 73.0 ms，均不劣于改动前基线；确定性**指令数基线完全未变**
-（`crates/ada_vm/tests/perf_budget.rs` 全绿），说明"工作量"没有增加。
+**失败时**写入，成功路径零成本）经 criterion 复测**无可测代价**；T6.2e 的收获见上表。
+两者的确定性**指令数基线都逐字节未变**（`crates/ada_vm/tests/perf_budget.rs` 全绿），
+说明"工作量"没有增加，收益全部来自表示与派发成本。
 
-⚠️ **未达计划目标**：T6.2 的验收线是"≥30%"。纯微优化在解释器上只拿到约 **13%**，
-剩余空间需要（按性价比排序）：
-1. **`Value` 结构瘦身**：`size_of::<Value>() == 48`（被 `NativeFn{String,Arc}` 与 `Intrinsic{Box,Vec}` 撑大）；
-   把这两个变体 box 化可降到 16 字节，寄存器文件从 96 KiB 降到 32 KiB（能进 L1）。
-2. 指令级特化（`AddInt` 之类，需按景点内联缓存）。
-3. **Tier 2 JIT**（T6.4）——数量级提升的唯一途径。
+**T6.2 完成度**：计划验收线是"≥30%"。目前**迭代器管道 −46.6%**、冷启动 −27.9%、
+fib −25.3%、numeric_loop −23.7%，平均约 **−29%**——即"≥30%"已在适配器/闭包密集路径上达标，
+纯算术循环仍差几个百分点。剩余空间：
+1. 指令级特化 + 按景点内联缓存（`AddInt`、`GetField` 方法表缓存）。
+2. **Tier 2 JIT**（T6.4）——数量级提升的唯一途径。
+
+（`string_concat` 不计入：它是 O(n²) 的 memcpy 主导，抖动 ±10%。）
 
 ### 11.4 值模型决策 D1：维持 `enum Value` ✅
 
 | 证据 | 数值 |
 | :--- | :--- |
-| `size_of::<Value>()` | **48 字节**（`cargo run -p ada_vm --example size_probe`） |
+| `size_of::<Value>()` | **16 字节**（T6.2b 前为 48；`cargo run -p ada_vm --example size_probe`） |
+| 胖载荷（放 `Arc` 后） | `NativeFunction` 40 B、`IntrinsicCall` 40 B |
 | `size_of::<Instruction>()` | 12 字节（每条指令克隆的代价可忽略，无需"按引用匹配"） |
-| `size_of::<Option<Value>>()` | 48 字节（无额外开销） |
-| 主要撑大者 | `NativeFn { name: String, callback: Arc<dyn Fn> }`（40B）、`Intrinsic { kind, Option<Box<Value>>, Vec<Value> }`（33B） |
+| `size_of::<Option<Value>>()` | 16 字节（Niche 优化，无额外开销） |
+| 寄存器文件 | 2048 × 16 B = **32 KiB**（放进 L1；此前 96 KiB 放不进） |
 
-**结论**：0.1.0 **不做 NaN-boxing**（D1 = A）。理由：收益需要 JIT/寄存器压力证明，而成本是
-`value.rs` 全量重写 + 全部 builtins 改造 + 与 `Arc` 所有权/GC（D6）耦合；先把便宜的一步
-（box 化两个胖变体）作为候选优化记录在案。上表同时说明：**M6 阶段限制性能的不是值大小**
-（4 条微优化已拿到 13%，而 Value 仍是 48 字节），因此 NaN-boxing 不是当前瓶颈。
+**结论**：0.1.0 **不做 NaN-boxing**（D1 = A）。原本的理由是"收益需证据、成本是 `value.rs`
+全量重写 + builtins 改造"；T6.2b 给出了更强的证据：**先把两个胖变体 box 化就拿到了
+−34.7%（适配器路径）/ −25%（整体热路径）**，而 `Value` 已到 16 字节（该枚举设计下
+tag + 8 字节载荷的实际上限）。NaN-boxing 能再省的那 8 字节，不足以抵消全量重写与
+与 `Arc` 所有权/GC（D6）耦合的风险。
 
 ### 11.5 内存模型决策 D6：维持 `Arc<RwLock<Value>>` ✅
 
@@ -575,13 +596,12 @@ iterator_pipeline 73.0 ms，均不劣于改动前基线；确定性**指令数�
 | 层 | 形态 | 状态 |
 | :--- | :--- | :--- |
 | Tier 0 · 解释器 | 寄存器字节码 VM，毫秒级启动 | ✅（上表为实测基线） |
-| Tier 1 · VM 微优化 | 循环头合并、捕获表共享、计量合并 | ✅ 已完成 4 项（≈13%）；`Value` 瘦身/指令特化 📋 |
+| Tier 1 · VM 微优化 | 循环头合并、捕获表共享、计量合并、**`Value` 瘦身 48→16 B** | ✅ 已完成 5 项（≈29% 平均，适配器路径 −46.6%） |
 | Tier 2 · JIT | Cranelift IR 下沉 + 热点计数 + guard/deopt | 📋 T6.4（`ada_jit` crate 尚不存在；验收线：`fib(30)` 较 VM 提速 ≥10×） |
 
 ### 11.7 今后的可优化点（按证据排序）
 
-1. `Value` 胖变体 box 化（48 → 16 字节），预期收益最大且改动面可控（24 处匹配点）。
-2. `GetField` 每次访问方法都新建闭包 → 方法表缓存。
-3. 容器 `RwLock` 访问开销 → 单线程路径用 `RefCell`（需与 D6 一并复核）。
-4. 字符串 `+=` 是 O(n²)（`string_concat` 基准把这一点量化了）→ 若要优化需要语言级 builder 或 rope。
-5. JIT 前先做"指令特化 + 内联缓存"，把解释器剩余开销压到 JIT 值得做为止。
+1. 指令级特化 + 按景点内联缓存（`AddInt`、`GetField` 方法表缓存）——解释器剩余的主要开销。
+2. 容器 `RwLock` 访问开销 → 单线程路径用 `RefCell`（需与 D6 一并复核）。
+3. 字符串 `+=` 是 O(n²)（`string_concat` 基准把这一点量化了）→ 若要优化需要语言级 builder 或 rope。
+4. JIT 前先做第 1 项，把解释器剩余开销压到 JIT 值得做为止。

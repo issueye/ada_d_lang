@@ -129,6 +129,17 @@
 
 ### Changed
 
+- **`Value` 从 48 字节降到 16 字节（T6.2e）**：`NativeFn` 与 `Intrinsic` 的载荷改放
+  `Arc<NativeFunction>` / `Arc<IntrinsicCall>` 之后。寄存器文件（2048 槽）随之从 96 KiB
+  降到 **32 KiB**，可以放进 L1。实测（criterion，对 M6 原始基线）：
+  **iterator_pipeline −46.6%**、冷启动 −27.9%、fib −25.3%、numeric_loop −23.7%、json −21.4%；
+  该项单独贡献 pipeline −34.7%、fib −10.1%。
+  **指令数基线逐字节不变**（只改表示与派发成本，未减工作量）。
+  新增 `Value::native_fn_shared`（复用宿主已有的 `Arc<dyn Fn>`）、
+  `crates/ada_vm/tests/value_layout.rs`（把"≤16 字节 / 寄存器文件放得进 L1"变成门禁）、
+  `size_probe` 示例扩展为打印载荷与寄存器文件占用。
+- `Engine::register_module` 改用 `Value::native_fn_shared`（不再二次包装回调）。
+
 - 文档整合为「单一权威」结构：新增 `docs/README.md` 索引与 `SPEC_LANGUAGE`/`SPEC_RUNTIME`/`SPEC_STDLIB`/`SPEC_ASYNC`，移除 `LANGUAGE_DESIGN`/`STDLIB_DESIGN`/`ITERATOR_SPEC`/`ASYNC_DESIGN`；路线图唯一收敛到 `docs/DEVELOPMENT_PLAN.md`（T0.3）。
 - `cargo fmt` 全量格式化（纯格式，无语义变更）。
 - 冲突的语义已定案：整数溢出采用「报错」而非回绕（决策 D5）；迭代器适配器采用「即时求值」（决策 D3）；闭包捕获采用「引用共享」（决策 D8）；`{ x }` 保持为 map 简写（决策 D4）；`match` 非穷尽采用「运行时错误」而非警告（决策 D7）；异步采用「单线程协作式事件循环」而非 Tokio/Fiber（决策 D2）。
