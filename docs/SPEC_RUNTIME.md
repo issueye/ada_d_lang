@@ -44,6 +44,7 @@ enum Value {
     Map(Arc<RwLock<HashMap<String, Value>>>),
     Closure(Arc<Closure>),
     NativeFn { name: String, callback: Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send + Sync> },
+    Intrinsic { kind: AdapterKind, receiver: Option<Box<Value>>, args: Vec<Value> },
     Task(Arc<RwLock<Value>>),
     Iterator(Arc<RwLock<IteratorState>>),
 }
@@ -183,13 +184,19 @@ struct Vm {
 | 顶层 `let` 跨轮次保留 | ⚠️ | 不保留（G-R2 / T2.4） |
 | 寄存器窗口回收 | ⚠️ | **从不回收**；`registers` 只增不减（T6.2） |
 | `execute()` 重置帧 | ✅ | 每次清空 `frames` |
-| `execute()` 重置 fuel | ⚠️ | **不重置**（T2.6） |
+| `execute()` 重置 fuel | ✅ | **每次执行都从配置预算重新装填**（T2.6）：一次 `OutOfFuel` 不会让同一个 `Vm`/`Engine` 永久失效 |
+| 燃料可观测 | ✅ | `remaining_fuel()` 查询剩余；`reset_fuel()` 手动装填；`get_fuel()` 返回配置预算 |
 
 ### 5.2 调用约定 ✅
 
 - `Call{dst,callee,arg_start,arg_count}`：实参必须**连续排布**在 `arg_start..arg_start+arg_count`（编译器在实参求值后回退 `next_reg` 来保证）。
 - `Closure` 调用：校验 `arity == arg_count` → 扩容寄存器 → 拷贝实参到新帧 `R0..` → 压帧。
 - `NativeFn` 调用：直接把寄存器切片交给 Rust 回调，返回值写入 `dst`。
+  ⚠️ 回调签名只有 `&[Value]`，**无法回调脚本闭包**——这是迭代器适配器必须由 VM 而非 builtins 实现的原因。
+- `Intrinsic` 调用（T2.1）：把接收者与已绑定实参拼到调用实参之前，交给 `Vm::invoke_adapter`。
+- **可重入调用**：`Vm::call_callable(callee, args)` 支持从 VM 内部（适配器回调）调用任意可调用值。
+  对闭包会压入一个合成帧（寄存器窗口从 `registers.len()` 起分配），用 `run_loop_until(stop_depth)`
+  执行到该帧返回为止，随后无条件恢复帧栈与寄存器长度（即使中途报错）。
 - `Return{src}`：弹出帧，把返回值写回**调用者**的 `dst_reg`；帧栈空则整体返回。
 
 ---
@@ -278,7 +285,8 @@ struct Vm {
 | `Engine::new()` | ✅ | 创建 VM 并注册全部内置函数与模块 |
 | `set_global(name, Value)` / `get_global(name)` | ✅ | 注入/读取全局 |
 | `register_fn(name, cb)` | ✅ | 注册原生函数；签名 `Fn(&[Value]) -> Result<Value, String> + Send + Sync` |
-| `set_fuel(Option<u64>)` / `get_fuel()` | ✅ | 指令熔断 |
+| `set_fuel(Option<u64>)` / `get_fuel()` | ✅ | 设置/读取燃料预算（每次 `eval` 自动重新装填，T2.6） |
+| `remaining_fuel()` / `reset_fuel()` | ✅ | 查询剩余燃料 / 手动装填（T2.6） |
 | `eval_value(source) -> Value` | ✅ | 求值并返回原生值 |
 | `eval::<T: FromValue>(source)` | ✅ | 泛型转换返回 |
 | 公共类型 re-export（`Value` / `Closure` / `VmError` / `ParseError`） | ⚠️ | **未导出**：`use ada_engine::{Engine, Value}` 编译失败（E0603），宿主必须自行依赖 `ada_vm`（任务 T0.7） |

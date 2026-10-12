@@ -140,6 +140,37 @@ fn spec_stdlib_iteration_examples() {
 }
 
 #[test]
+fn spec_stdlib_iterator_adapter_examples() {
+    // SPEC_STDLIB §6.2 计划验收用例
+    let code = r#"
+        let result = range(1, 1000)
+            |> filter(x => x % 2 != 0)
+            |> map(x => x * x)
+            |> take(5)
+            |> sum()
+        result
+    "#;
+    assert_eq!(eval_i64(code), 165);
+
+    // SPEC_STDLIB §6 方法形式 + §6.3 双入口
+    assert_eq!(eval_i64("[1, 2, 3].map(x => x * 2).sum()"), 12);
+    assert_eq!(
+        eval_string("[1, 2, 3, 4].filter(x => x % 2 == 0).collect() |> join(\"-\")"),
+        "2-4"
+    );
+}
+
+#[test]
+fn spec_language_top_level_binding_persists_across_evaluations() {
+    // SPEC_LANGUAGE §5.1：模块顶层绑定跨轮可见（T2.4）
+    let mut engine = Engine::new();
+    let a: i64 = engine.eval("let a = 41").unwrap();
+    assert_eq!(a, 41);
+    let b: i64 = engine.eval("a + 1").unwrap();
+    assert_eq!(b, 42);
+}
+
+#[test]
 fn spec_stdlib_string_and_array_prototypes() {
     assert_eq!(eval_string("\"  Ada  \".trim().to_upper()"), "ADA");
     assert_eq!(eval_string("\"abcdef\".slice(1, 4)"), "bcd");

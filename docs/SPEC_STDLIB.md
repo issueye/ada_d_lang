@@ -35,7 +35,7 @@
 | `type_of(v)` | `string` | `"nil"` `"bool"` `"int"` `"float"` `"string"` `"array"` `"map"` `"function"` `"task"` `"iterator"` |
 | `is_nil(v)` | `bool` | 无参时返回 `true` |
 | `is_num(v)` | `bool` | `int` 或 `float` |
-| `is_str(v)` / `is_arr(v)` / `is_map(v)` / `is_fn(v)` / `is_task(v)` | `bool` | ⚠️ 缺 `is_iterator`（任务 T2.1 时一并补） |
+| `is_str(v)` / `is_arr(v)` / `is_map(v)` / `is_fn(v)` / `is_task(v)` / `is_iterator(v)` | `bool` | ✅ 全部可用（`is_iterator` 于 T2.1 补齐） |
 
 ### 2.3 类型转换
 
@@ -138,7 +138,7 @@
 | `.len` | ✅ | **字符数**（Unicode 标量个数，T2.5） |
 | `.len_bytes` | ✅ | 字节数（UTF-8 编码长度） |
 | `.chars` | ✅ | 返回单字符数组（按 Unicode 字符切分） |
-| `.chars_with_idx` | 📋 | 目标 API（T2.3） |
+| `.chars_with_idx` | ✅ | 返回 `[[0, ch0], [1, ch1], ...]`（T2.3） |
 | `.lines` | ✅ | 按行切分为数组 |
 | `.trim()` | ✅ | 去首尾空白 |
 | `.to_upper()` / `.to_lower()` | ✅ | 大小写转换 |
@@ -146,7 +146,7 @@
 | `.contains(s)` / `.starts_with(s)` / `.ends_with(s)` | ✅ | 子串判断 |
 | `.replace(from, to)` | ✅ | 全部替换（参数不足报错） |
 | `.slice(start, [end])` | ✅ | **按字符**切片，支持负索引，越界自动夹取 |
-| `.iter()` / `.next()` | 📋 | 迭代器协议方法（T2.3） |
+| `.iter()` | ✅ | 返回显式迭代器（零参方法，T2.3）；`iterator.next()` 逐项推进，耗尽返回 `nil` |
 
 ### 4.2 `array` ✅⚠️
 
@@ -165,8 +165,8 @@
 | `.enumerate()` | ✅ | 返回 `[[0, v0], [1, v1], ...]` 新数组 |
 | `.join(sep)` | ✅ | 拼接字符串，缺省分隔符 `","` |
 | `.await_all()` | ⚠️ | 见 §2.7 |
-| `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | 📋 | **全部缺失**，任务 T2.1（当前访问返回 `nil`，调用报 `NotCallable`） |
-| `.iter()` / `.next()` | 📋 | T2.3 |
+| `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | ✅ | **迭代器适配器**（T2.1），语义与惰性程度统一见 §6 |
+| `.iter()` | ✅ | 返回显式迭代器（T2.3）；`iterator.next()` 逐项推进，耗尽返回 `nil` |
 
 ### 4.3 `map` ✅⚠️
 
@@ -179,11 +179,18 @@
 | `.remove(k)` | ✅ | 删除并返回旧值，缺失返回 `nil` |
 | `.merge(other)` | ✅ | 就地覆盖合并，返回 `nil` |
 | `.get(k)` / `.has(k)` | 📋 | 可用属性访问/`contains_key` 替代，暂不新增 |
-| `.iter()` / `.next()` | 📋 | T2.3 |
+| `.iter()` | ✅ | 返回显式迭代器（T2.3） |
+| `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | ✅ | 迭代器适配器（T2.1）；map 按 `[key, value]` 二元数组迭代 |
 
-### 4.4 未知成员的访问语义 ⚠️
+### 4.4 成员派发优先级 ⚠️
 
-访问不存在或未实现的方法时，`array`/`string` 的字段查询返回 `nil`（不报错），随后调用触发 `NotCallable(nil)`。nil 目标上的非可选访问报 `TypeError`。任务 T3.7 将补测试固化该口径。
+字段访问（`x.field`）的解析顺序：
+
+1. **Map 上的适配器同名键**（T2.1 新增名字）优先——这些名字在 0.1.0 之前未定义，属纯新增，不构成回归：`{ map: 7 }.map` → `7`。
+2. **原型方法名**：`len` / `keys` / `values` / `entries` / `contains_key` / `remove` / `merge` / `push` / `pop` / `sort` / `trim` / `split` / `slice` … —— 因此 `{ len: 9 }.len` 仍返回**键值对数量** `1`，不是 `9`，这是一处已知的命名歧义（缺口 G-S12，任务 T3.5 决定是否改为"键优先"）。
+3. **适配器方法名**（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`/`enumerate`/`rev`/`join`/`sum`）。
+4. **Map 的普通键**。
+5. 其余情况返回 `nil`；对 `nil` 目标做非可选访问则报 `TypeError`。对不可迭代的目标调用适配器名字（如 `true.filter`）会得到 `nil`，随后调用报 `NotCallable`（T3.7 将补测试固化该口径）。
 
 ---
 
@@ -216,7 +223,8 @@ for [idx, item] in [10, 20].enumerate() { ... }  // 带索引
 - **不预分配数组**，内存 `O(1)`，状态机为 `{current, end, step}`。
 - 左闭右开：`range(0, 5)` → `0,1,2,3,4`；`range(5, 0, -1)` → `5,4,3,2,1`（实测）。
 - `range` 返回值的 `type_of` 为 `"iterator"`。
-- ⚠️ `iterator` 目前**没有任何方法**（不能 `.map()`/`.take()`/`.collect()`），也不能直接 `println` 出内容（显示为 `<iterator>`）。这是"惰性优先"设计落地的主要缺口（T2.1/T2.3）。
+- ✅ `iterator` 拥有一整套适配器方法与显式迭代协议（见 §6）；`println` 仍显示为 `<iterator>`（不物化）。
+- ⚠️ 迭代器是**有状态、可消费**的：`.next()`、`for..in` 与适配器都会推进同一份状态；被消费后即耗尽。需要重复遍历时请先 `.collect()`。
 
 ### 5.3 迭代器状态机（类型）
 
@@ -231,24 +239,37 @@ for [idx, item] in [10, 20].enumerate() { ... }  // 带索引
 
 ## 6. 迭代器适配器
 
-**目标形态** 📋（任务 T2.1；求值策略由决策 D3 决定：先做即时版，再评估惰性链）。当前**全部未实现**：白皮书与本文档历史版本中的 `arr |> filter(...) |> map(...)` 示例在 0.1.0 上会报 `UndefinedGlobal("filter")`。
+**状态**：✅ 已实现（T2.1，2026-10）。**当前为即时求值**（决策 D3 = A：先把能力打通，惰性链留待后续）；因此适配器结果一律是 `Array`，`range(1_000_000).map(...)` 会先物化整段区间。
 
-| 适配器 | 参数 | 返回（惰性目标） | 功能 | 状态 |
+**双入口**：同名能力同时提供方法形式与全局函数形式，后者供 `|>` 管道使用。
+
+| 适配器 | 参数（含可迭代值） | 返回 | 功能 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| `.map(f)` | `f: (T) -> R` | `Iterator<R>` | 元素映射 | 📋 |
-| `.filter(f)` | `f: (T) -> bool` | `Iterator<T>` | 谓词过滤 | 📋 |
-| `.take(n)` | `n: int` | `Iterator<T>` | 截取前 n 个 | 📋 |
-| `.skip(n)` | `n: int` | `Iterator<T>` | 跳过前 n 个 | 📋 |
-| `.enumerate()` | — | `Iterator<[int, T]>` | 附加索引 | ✅（仅数组，且已物化为数组） |
-| `.collect()` | — | `Array` | 消费并聚合 | 📋 |
-| `.count()` | — | `int` | 元素计数 | 📋 |
-| `.sum()` | — | `num` | 数值求和 | ✅（仅数组） |
-| `.find(f)` | `f: (T) -> bool` | `T \| nil` | 首个满足项 | 📋 |
-| `.any(f)` / `.all(f)` | `f: (T) -> bool` | `bool` | 存在性 / 全称判断 | 📋 |
-| `.join(sep)` | `sep: string` | `string` | 拼接 | ✅（仅数组） |
-| `.iter()` / `.next()` | — | `Iterator` / `T \| 终止` | 显式迭代协议 | 📋（T2.3） |
+| `.map(f)` / `map(xs, f)` | `f: (T) -> R` | `Array<R>` | 元素映射 | ✅ |
+| `.filter(f)` / `filter(xs, f)` | `f: (T) -> bool` | `Array<T>` | 谓词过滤 | ✅ |
+| `.take(n)` / `take(xs, n)` | `n: int` | `Array<T>` | 截取前 n 个（`n < 0` 视为 0） | ✅ |
+| `.skip(n)` / `skip(xs, n)` | `n: int` | `Array<T>` | 跳过前 n 个 | ✅ |
+| `.collect()` / `collect(xs)` | — | `Array` | 物化 | ✅ |
+| `.count()` / `count(xs)` | — | `int` | 元素计数 | ✅ |
+| `.sum()` / `sum(xs)` | — | `num` | 数值求和（整数溢出报错） | ✅ |
+| `.find(f)` / `find(xs, f)` | `f: (T) -> bool` | `T \| nil` | 首个满足项 | ✅ |
+| `.any(f)` / `any(xs, f)` | `f: (T) -> bool` | `bool` | 存在性（空集合为 `false`） | ✅ |
+| `.all(f)` / `all(xs, f)` | `f: (T) -> bool` | `bool` | 全称判断（空集合为 `true`） | ✅ |
+| `.enumerate()` / `enumerate(xs)` | — | `Array<[int, T]>` | 附加递增索引 | ✅ |
+| `.rev()` / `rev(xs)` | — | `Array<T>` | 逆序拷贝 | ✅ |
+| `.join(sep)` / `join(xs, sep)` | `sep: string`（缺省 `","`） | `string` | 拼接 | ✅ |
+| `.iter()` | — | `Iterator` | 显式迭代器（零参方法） | ✅ |
+| `iterator.next()` | — | `T \| nil` | 推进一步；耗尽返回 `nil` | ✅ |
 
-### 6.1 目标示例（实现后必须通过，作为 golden 用例）
+### 6.1 参数与错误契约
+
+- 参数个数（**含可迭代值**）：`map`/`filter`/`find`/`take`/`skip`/`any`/`all` 恰为 2；`join` 为 1–2；其余恰为 1。不符时报 `NativeError`（不是 panic）。
+- 回调参数个数不匹配报 `ArityMismatch`。
+- 回调抛错会原样向上传播（适配器不做吞错）。
+- 可迭代源：`array` / `string`（按字符）/ `map`（按 `[key, value]`）/ `iterator` / `int`（`0..n`）。其它类型作为**单元素序列**处理（与 `for..in` 一致）。
+- 对不可迭代目标调用适配器名字得到 `nil`，随后调用报 `NotCallable`（派发规则见 §4.4）。
+
+### 6.2 已通过的计划验收用例
 
 ```ada
 let result = range(1, 1000)
@@ -259,16 +280,18 @@ let result = range(1, 1000)
 assert_eq(result, 165)   // 1 + 9 + 25 + 49 + 81
 ```
 
-> ⚠️ 该示例的成立依赖两项前置：**闭包可捕获外层变量**（T2.2，否则 `x` 之外的上下文无法引用）与**适配器自身实现**（T2.1）。这也是为什么 T2.1 与 T2.2 同列 P1。
+对应测试：`crates/ada_vm/tests/adapters.rs::plan_acceptance_pipeline_returns_165`。
 
-### 6.2 双入口约定 📋
+> 注：该示例只用到回调自身参数，因此**不依赖**闭包捕获（T2.2）。一旦回调需要引用外部变量（如 `let t = 3; xs |> filter(x => x > t)`），则必须先完成 T2.2。
 
-为了让 `|>` 与链式调用都自然，适配器须同时存在于两个位置：
+### 6.3 双入口实现方式 ✅
 
-- 全局函数：`filter(arr, f)`、`map(arr, f)`、`sum(arr)` …（供 `arr |> filter(f)` 脱糖为 `filter(arr, f)`）。
-- 原型方法：`arr.filter(f)` …（供链式）。
+为了让 `|>` 与链式调用都自然，适配器同时存在于两个位置：
 
-`sum` 已同时具备（§2.6 + §4.2），其余适配器按此模式补齐。
+- **全局函数**：`filter(xs, f)`、`map(xs, f)` …（`xs |> filter(f)` 会脱糖为 `filter(xs, f)`）。
+- **原型方法**：`xs.filter(f)` …（VM 在字段派发时绑定接收者）。
+
+实现上二者共用同一个 `Value::Intrinsic` 值：全局形式无接收者，方法形式把接收者绑定进 `receiver`，调用时拼成 `[接收者, ...已绑定实参, ...调用实参]` 交给 `Vm::invoke_adapter`。因此 `let m = xs.map` 之后再 `m(f)` 同样可用。
 
 ---
 
@@ -300,14 +323,16 @@ engine.register_module(MyToolModule::new());
 
 | ID | 缺口 | 状态 | 任务 |
 | :--- | :--- | :--- | :--- |
-| G-S1 | 迭代器适配器全族缺失（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`） | 📋 | T2.1 / D3 |
+| G-S1 | 迭代器适配器全族缺失（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`） | ✅ 已修复（T2.1）：13 个适配器已实现，方法/全局双入口 | ✅ T2.1 |
 | G-S2 | `string.len` 与 `len()` 返回字节数 | ✅ 已修复（T2.5）：二者均为字符数，字节数走 `.len_bytes` | ✅ T2.5 |
-| G-S3 | `iterator` 无任何方法，无法链式消费 | 📋 | T2.3 |
+| G-S3 | `iterator` 无任何方法，无法链式消费 | ✅ 已修复（T2.3）：适配器 + `.iter()`/`.next()` 可用 | ✅ T2.3 |
 | G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ⚠️ | T4.3 / T4.5 |
 | G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ⚠️ | T5.1 / T5.2 |
-| G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ | T3.5 统一错误口径 |
+| G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ 口径统一 | T3.5 |
 | G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |
 | G-S8 | map 迭代/`keys()`/`entries()` 顺序不保证（`HashMap`） | ⚠️ | 规范明示；如需稳定顺序见 D6 |
 | G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ⚠️ | T3.6 |
-| G-S10 | 缺失 `is_iterator` | ⚠️ | T2.1 |
+| G-S10 | 缺失 `is_iterator` | ✅ 已修复（T2.1）：已注册 `is_iterator` | ✅ T2.1 |
 | G-S11 | `NativeModule` 与模块注册接口不存在 | 📋 | T5.5 |
+| G-S12 | 适配器结果为即时求值（非惰性），大区间会先物化 | ⚠️ 已按决策 D3 = A 记录 | 后续评估惰性链 |
+| G-S13 | map 上 `len`/`keys` 等原型方法名遮蔽同名键（`{len: 9}.len` → `1`） | ⚠️ | T3.5（是否改为键优先） |

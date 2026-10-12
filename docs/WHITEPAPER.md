@@ -109,17 +109,17 @@
 
 ## 6. 当前实现状态（诚实基线）
 
-> 白皮书描述的是**目标形态**。截至 `0.1.0`（M0/M1 完成后），实现进度如下（详细缺口与任务见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) §2）：
+> 白皮书描述的是**目标形态**。截至 `0.1.0`（M0–M2 进行中），实现进度如下（详细缺口与任务见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) §2）：
 
 | 能力块 | 状态 |
 | :--- | :--- |
 | 语言前端（词法/语法/AST） | ✅ 已落地（ASI、插值、管道、`??`/`?.`、`match`、解构 `for`、闭包） |
 | 寄存器字节码 VM + 编译流水线 | ✅ 已落地 |
-| 指令燃料（Fuel）熔断 | ✅ 已落地 |
+| 指令燃料（Fuel）熔断 | ✅ 已落地（每次求值自动重新装填，T2.6） |
 | **宿主崩溃防护（脚本 panic 逃逸）** | ✅ M1 已修复 5 类可触发 panic 的脚本输入（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`），并有 17 个回归用例（见 [SPEC_RUNTIME §6](SPEC_RUNTIME.md)） |
 | 宿主嵌入 API（`Engine` / `register_fn` / `eval<T>`） | ✅ 可用（公共类型已 re-export；权限分级与资源预算仍缺） |
-| 标准库（`json`/`math`/`time`/`sys`/`env` + 原型方法子集） | ⚠️ 部分（迭代器适配器全族缺失） |
-| 统一迭代器协议 | ⚠️ `for..in` 已统一；适配器链未实现 |
+| 标准库（`json`/`math`/`time`/`sys`/`env` + 原型方法） | ✅ 主要能力齐备（字符串/数组/字典原型方法 + 13 个迭代器适配器） |
+| 统一迭代器协议 | ✅ `for..in` 已统一，`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`/`enumerate`/`rev`/`join`/`sum` 与方法链均可用；⚠️ 当前为即时求值（非惰性链，见决策 D3） |
 | 异步与并发 | ⚠️ 仅语法；`spawn` 为同步求值包装，无并发（见 [SPEC_ASYNC §3](SPEC_ASYNC.md)） |
 | 沙箱权限分级 / 内存预算 / 墙钟超时 | 📋 规划中 |
 | Cranelift JIT / NaN-boxing 值模型 | 📋 规划中（白皮书早期版本曾将其描述为现状，现已修正为规划） |
