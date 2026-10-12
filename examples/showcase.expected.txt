@@ -3,7 +3,7 @@ immutable=10 counter=1
 inner shadow=2
 outer shadow=1
 -- functions --
-add=5 bonus=150 fib(10)=55 early(-1)=negative
+add=5 bonus=150.0 fib(10)=55 early(-1)=negative
 -- control flow --
 range sum=10
 chars=A.d.a.
@@ -26,13 +26,13 @@ scalar=true str=true same_ref=true diff_ref=false
 truthy=1 falsy=0 nil_falsy=0
 -- stdlib globals --
 type_of=int/string/array/map:map/function
-conv=42/3/7
+conv=42/3.0/7
 math=4/1/3/10/4/3/4
 assert=true/true
 -- stdlib modules --
 json=Ada/ai/true/101 valid=true/false
 stringify={"ok":true}
-mathmod=16/256/3141
+mathmod=16.0/256.0/3141
 -- prototypes --
 string=Ada Script/ADA SCRIPT/ada script
 split=a+b+c replace=foo baz
@@ -51,4 +51,9 @@ explicit=7/8/nil
 chars_with_idx=[[0, a], [1, b]]
 -- async syntax --
 async=10/50/[1, 2]
+-- semantics --
+immutable=10 mutable=11
+neg_index=3/c/nil tail_write=1
+tail_write=[1, 2, 9] mixed_mod=1.0 int_mod=1
+compare=1 nan_cmp=0 float_str=1.0/1.5
 -- showcase complete --

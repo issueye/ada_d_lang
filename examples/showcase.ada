@@ -181,6 +181,22 @@ let task1 = spawn fetch_service("auth", 5)
 let task2 = spawn 50
 println($"async={task1.await}/{await task2}/{[spawn 1, spawn 2].await_all()}")
 
+// ------------------------------------------------ M3 语义收紧（T3.1 / T3.5 / T3.6）
+println("-- semantics --")
+let frozen = 10
+mut flexible = 10
+flexible += 1
+println($"immutable={frozen} mutable={flexible}")
+
+let numbers = [1, 2, 3]
+println($"neg_index={numbers[-1]}/{"abc"[-1]}/{"abc"[-9]} tail_write={numbers[0]}")
+
+mut writable = [1, 2, 3]
+writable[-1] = 9
+println($"tail_write={writable} mixed_mod={5.0 % 2} int_mod={5 % 2}")
+
+println($"compare={to_int(1 < 2.5)} nan_cmp={to_int((0.0 / 0.0) < 1.0)} float_str={to_str(1.0)}/{to_str(1.5)}")
+
 // ------------------------------------------------ 断言收尾（自校验）
 assert_eq(range(1, 1000) |> filter(x => x % 2 != 0) |> map(x => x * x) |> take(5) |> sum(), 165)
 assert_eq(fib(10), 55)

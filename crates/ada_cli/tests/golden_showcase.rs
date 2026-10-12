@@ -98,6 +98,7 @@ fn showcase_covers_every_spec_section() {
         "-- prototypes --",
         "-- iteration --",
         "-- async syntax --",
+        "-- semantics --",
     ] {
         assert!(
             script.contains(marker),
