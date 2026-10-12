@@ -24,6 +24,19 @@ pub enum LexError {
     UnterminatedInterpExpr { line: usize, col: usize },
 }
 
+impl LexError {
+    /// 出错位置 `(line, col)`（供 CLI 统一错误格式与编辑器诊断使用，T0.6/T7.2）。
+    pub fn position(&self) -> (usize, usize) {
+        match self {
+            LexError::UnexpectedChar { line, col, .. }
+            | LexError::UnterminatedString { line, col }
+            | LexError::UnterminatedBlockComment { line, col }
+            | LexError::InvalidNumber { line, col, .. }
+            | LexError::UnterminatedInterpExpr { line, col } => (*line, *col),
+        }
+    }
+}
+
 pub struct Lexer<'a> {
     source: &'a str,
     chars: Vec<(usize, char)>,

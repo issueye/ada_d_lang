@@ -325,9 +325,22 @@ struct Vm {
 
 | 规范要求 | 状态 |
 | :--- | :--- |
-| 所有错误携带源码位置（`file:line:col`） | ⚠️ `Span` 已存在但 VM 错误未附带（T1.8） |
-| CLI 输出统一格式 | ⚠️ 当前仅 `Error: {Debug 形式}`（T0.6） |
-| 库错误不得 panic | ⚠️ 未达成（§6 的 G-R8~G-R10、字符串索引 panic） |
+| 所有错误携带源码位置（`file:line:col`） | ⚠️ 词法/语法错误已带 `line:col`（`LexError::position` / `ParseError::position`）；编译期与运行时错误尚无 `Span`（T1.8 待补） |
+| CLI 输出统一格式（T0.6） | ✅ 单行 `[file:]line:col: error: <消息>`；无 span 时退化为 `file: error: <消息>`（不再输出 Debug 形式）；`crates/ada_cli/tests/cli_errors.rs` 固定该契约 |
+| 库错误不得 panic | ✅ 脚本输入不再触发宿主 panic（M1 清零 + M5 敌意输入回归）；宿主侧 `catch_unwind` 兜底仍为 📋 T1.7 |
+
+### 8.1 CLI 错误格式 ✅（T0.6）
+
+```
+file:line:col: error: <消息>      # 词法/语法错误：位置可用
+file: error: <消息>              # 编译/运行时错误：当前没有 span
+```
+
+- 一律**单行**（编辑器/工具可直接切分），`file` 为脚本路径，`-e` 求值时是 `<eval>`。
+- 消息用 `Display`（人话）而非 `Debug`：例如
+  `Cannot assign to immutable variable 'a' (declare it with `mut`)`、
+  `No `match` arm matched the value (non-exhaustive match); add a `_` arm`、
+  `Capability 'time' is not available in the 'strict' sandbox profile`。
 
 ---
 

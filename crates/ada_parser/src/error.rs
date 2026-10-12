@@ -58,3 +58,15 @@ pub enum ParseError {
     #[error("Lexer error: {0}")]
     Lex(#[from] LexError),
 }
+
+impl ParseError {
+    /// 出错位置 `(line, col)`；词法错误沿用其自身位置（T0.6/T7.2）。
+    pub fn position(&self) -> (usize, usize) {
+        match self {
+            ParseError::UnexpectedToken { line, col, .. }
+            | ParseError::UnexpectedEof { line, col, .. }
+            | ParseError::InvalidAssignmentTarget { line, col } => (*line, *col),
+            ParseError::Lex(err) => err.position(),
+        }
+    }
+}
