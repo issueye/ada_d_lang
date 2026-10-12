@@ -1,7 +1,7 @@
 {
   "name": "ada-d",
   "displayName": "Ada-D (Ada Script)",
-  "description": "Ada-D / Ada Script 语法高亮（关键字、字符串插值、注释、运算符）",
+  "description": "Ada-D / Ada Script 语法高亮与实时诊断（通过 ada-lsp）",
   "version": "0.1.0",
   "publisher": "ada-d",
   "license": "MIT OR Apache-2.0",
@@ -10,6 +10,8 @@
   },
   "categories": ["Programming Languages"],
   "keywords": ["ada", "ada-d", "ada script"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:ada"],
   "contributes": {
     "languages": [
       {
@@ -25,6 +27,16 @@
         "scopeName": "source.ada",
         "path": "./syntaxes/ada.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Ada-D",
+      "properties": {
+        "ada.lsp.path": {
+          "type": "string",
+          "default": "",
+          "description": "ada-lsp 可执行文件的路径（留空则使用 PATH 中的 ada-lsp）"
+        }
+      }
+    }
   }
 }

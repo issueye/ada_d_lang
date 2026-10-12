@@ -1,0 +1,19 @@
+[package]
+name = "ada_lsp"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Ada-D 的最小 LSP 服务器（静态诊断：词法/语法/编译）"
+
+[lib]
+name = "ada_lsp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ada-lsp"
+path = "src/main.rs"
+
+[dependencies]
+ada_engine = { path = "../ada_engine" }
+serde_json = { workspace = true }

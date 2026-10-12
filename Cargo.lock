@@ -53,6 +53,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ada_lsp"
+version = "0.1.0"
+dependencies = [
+ "ada_engine",
+ "serde_json",
+]
+
+[[package]]
 name = "ada_parser"
 version = "0.1.0"
 dependencies = [
