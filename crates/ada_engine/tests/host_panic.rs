@@ -77,6 +77,25 @@ fn panicking_custom_module_function_is_contained() {
 }
 
 #[test]
+fn panic_inside_a_spawned_task_is_contained() {
+    let mut engine = Engine::new();
+    engine.register_fn("boom", |_args| panic!("task host bug"));
+
+    // 任务体内调用会 panic 的宿主函数，并在主任务里 await 它
+    let err = engine
+        .eval_diagnostic("fn work() {\n    boom()\n}\nlet t = spawn work()\nawait t")
+        .expect_err("a panic inside a task must not escape the engine");
+    let message = err.error.to_string();
+    assert!(
+        message.contains("Host function panicked"),
+        "unexpected error: {message}"
+    );
+    assert!(message.contains("task host bug"), "got {message}");
+    // 展开不会清空帧栈，因此仍能给出任务内的失败位置
+    assert_eq!(err.position.map(|p| p.line), Some(2));
+}
+
+#[test]
 fn normal_native_errors_are_unaffected() {
     // 对照组：返回 Err 的回调仍然只产生普通 NativeError（不需要重建引擎）
     let mut engine = Engine::new();

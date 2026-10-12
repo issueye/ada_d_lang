@@ -15,8 +15,10 @@
   `Position { line, col }` 与 `Error::position()`；`eval_value` 签名不变（老代码无需改动）。
   测试：`crates/ada_engine/tests/diagnostics.rs`（12 个）。
 - **宿主 panic 兜底（T1.7）**：`Vm::execute` 边界 `catch_unwind`，原生回调 / 适配器回调 /
-  自定义模块函数里的 panic 转为 `VmError::HostPanic { message }`（保留 panic 消息与失败位置），
-  不再杀死宿主进程；测试见 `crates/ada_engine/tests/host_panic.rs`（4 个）。
+  自定义模块函数 / **任务体内**的 panic 转为 `VmError::HostPanic { message }`
+  （保留 panic 消息与失败位置），不再杀死宿主进程；
+  测试见 `crates/ada_engine/tests/host_panic.rs`（5 个）。
+  经 criterion 复测无性能代价，确定性指令数基线未变。
 - **AI 单页规格（M7 / T7.4）**：`docs/AI_GUIDE.md`——给模型（或人）的语法/语义速查，含 15 个
   ```` ```ada run ```` 代码块（由真实 CLI 执行比对输出）、反直觉规则表、错误信息对照表与提示模板；
   `examples/ai/{transform,async,validate}.ada` 三个完整示例 + golden 输出，

@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **221**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `diagnostics.rs` 12 + `host_panic.rs` 4 + `doc_examples.rs` 16 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 9，另含各 crate 单元测试 36） |
+| 测试总数 | 34 | **222**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `diagnostics.rs` 12 + `host_panic.rs` 5 + `doc_examples.rs` 16 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 9，另含各 crate 单元测试 36） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -318,7 +318,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 221 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 诊断 12 + 宿主 panic 4 + 文档示例 16 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 9）。
+**当前状态**：`cargo test --workspace` → 222 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 诊断 12 + 宿主 panic 5 + 文档示例 16 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 9）。
 
 ---
 

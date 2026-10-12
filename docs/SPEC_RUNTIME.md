@@ -534,6 +534,11 @@ fn main() -> Result<(), ada_engine::Error> {
 | 计量合并为单布尔（T6.2d） | 墙钟检查 + 指令计数在关闭时只判一次布尔（修掉 M5 引入的每指令开销） | 同批测量 |
 | **累计（对原始基线）** | 四次低风险改动 | **fib −13.7%、numeric_loop −12.1%、iterator_pipeline −10.7%、冷启动 −16.6%**（≈ −13% 平均） |
 
+**后续改动的性能核对（M7 轮次）**：T1.7 的 `catch_unwind` 兜底与 T1.8 的位置记录（后者只在
+**失败时**写入，成功路径零成本）经 criterion 复测**无可测代价**：fib 24.7 ms、numeric_loop 17.4 ms、
+iterator_pipeline 73.0 ms，均不劣于改动前基线；确定性**指令数基线完全未变**
+（`crates/ada_vm/tests/perf_budget.rs` 全绿），说明"工作量"没有增加。
+
 ⚠️ **未达计划目标**：T6.2 的验收线是"≥30%"。纯微优化在解释器上只拿到约 **13%**，
 剩余空间需要（按性价比排序）：
 1. **`Value` 结构瘦身**：`size_of::<Value>() == 48`（被 `NativeFn{String,Arc}` 与 `Intrinsic{Box,Vec}` 撑大）；
