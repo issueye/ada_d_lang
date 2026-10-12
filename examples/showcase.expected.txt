@@ -1,0 +1,54 @@
+-- variables --
+immutable=10 counter=1
+inner shadow=2
+outer shadow=1
+-- functions --
+add=5 bonus=150 fib(10)=55 early(-1)=negative
+-- control flow --
+range sum=10
+chars=A.d.a.
+while steps=2
+int range sum=3
+-- indexing --
+len=6 bytes=10 first=A char4=语 oob=nil
+slice=Ada reversed_join=c-b-a
+-- closures --
+add5(1)=6 hits=2
+loop captures=[0, 1, 2]
+-- match --
+grade(95)=A grade(85)=B grade(61)=C grade(10)=F
+kind(0)=zero kind(-5)=negative kind(7)=positive
+-- navigation --
+timeout=3000 missing=fallback
+tag0=web len=2
+-- equality --
+scalar=true str=true same_ref=true diff_ref=false
+truthy=1 falsy=0 nil_falsy=0
+-- stdlib globals --
+type_of=int/string/array/map:map/function
+conv=42/3/7
+math=4/1/3/10/4/3/4
+assert=true/true
+-- stdlib modules --
+json=Ada/ai/true/101 valid=true/false
+stringify={"ok":true}
+mathmod=16/256/3141
+-- prototypes --
+string=Ada Script/ADA SCRIPT/ada script
+split=a+b+c replace=foo baz
+probe=true/true/true/bcd
+array=[1, 2, 3, 4] removed=0 contains=true/false
+array_rev=[4, 3, 2, 1] popped=4 now=[1, 2, 3]
+map=len:2->1 dropped:3 has_key:true
+-- iteration --
+0:x 1:y 
+range=15
+pipeline=165
+method=[30, 40]
+fold=3/a|b/8
+pred=true/true/false/true
+explicit=7/8/nil
+chars_with_idx=[[0, a], [1, b]]
+-- async syntax --
+async=10/50/[1, 2]
+-- showcase complete --

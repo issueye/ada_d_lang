@@ -93,6 +93,17 @@ mut dynamic_arr = [10, 20]
 dynamic_arr.push(30)
 println($"Dynamic array len: {dynamic_arr.len}, sum: {dynamic_arr.sum()}")
 
-// 8. 返回最后表达式计算值
+// 8. 闭包捕获 (upvalue) 与迭代器适配器管道 (T2.1 / T2.2)
+let factor = 3
+let scaled = [1, 2, 3, 4] |> filter(x => x % 2 == 0) |> map(x => x * factor) |> collect()
+println($"Closures + adapters: {scaled}")
+
+mut calls = 0
+let counted = x => { calls += 1
+    x * 10 }
+let mapped = [1, 2, 3].map(counted)
+println($"Adapter callbacks: {mapped}, call count: {calls}")
+
+// 9. 返回最后表达式计算值
 fib(10)
 
