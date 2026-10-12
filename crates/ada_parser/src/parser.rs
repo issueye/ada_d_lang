@@ -1,4 +1,4 @@
-use crate::error::ParseError;
+use crate::error::{shift_lex_error, ParseError};
 use ada_ast::*;
 use ada_lexer::{InterpPart, Lexer, Token, TokenKind};
 
@@ -36,6 +36,32 @@ impl Parser {
         let mut lexer = Lexer::new(source);
         let tokens = lexer.tokenize()?;
         Ok(Self::new(tokens))
+    }
+
+    /// 解析一段**片段**并把它的位置映射回源文件（T3.4）。
+    ///
+    /// 用于字符串插值 `$"{...}"`：片段是在别处被切出来的子串，
+    /// `base` 是它在源文件中的起始位置。映射规则：
+    /// - 字节偏移整体加上 `base.start`；
+    /// - 行号加上 `base.line - 1`；
+    /// - 仅**片段第一行**的列号加上 `base.col - 1`（后续行本来就从列 1 开始）。
+    pub fn from_fragment(fragment: &str, base: Span) -> Result<Self, ParseError> {
+        let mut lexer = Lexer::new(fragment);
+        let tokens = lexer.tokenize().map_err(|err| shift_lex_error(err, base))?;
+        let shifted = tokens
+            .into_iter()
+            .map(|mut token| {
+                let on_first_line = token.span.line == 1;
+                token.span.start += base.start;
+                token.span.end += base.start;
+                token.span.line += base.line - 1;
+                if on_first_line {
+                    token.span.col += base.col - 1;
+                }
+                token
+            })
+            .collect();
+        Ok(Self::new(shifted))
     }
 
     fn peek(&self) -> &Token {
@@ -518,8 +544,10 @@ impl Parser {
         for part in parts {
             match part {
                 InterpPart::Lit(s) => ast_parts.push(StringPart::Lit(s)),
-                InterpPart::Code(code, _) => {
-                    let mut sub_parser = Parser::from_source(&code)?;
+                InterpPart::Code(code, span) => {
+                    // T3.4：把片段内解析出的位置映射回源文件，使插值里的错误
+                    // 也能指向正确行列
+                    let mut sub_parser = Parser::from_fragment(&code, span)?;
                     let expr = sub_parser.parse_expr()?;
                     ast_parts.push(StringPart::Expr(expr));
                 }

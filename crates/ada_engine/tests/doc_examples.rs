@@ -121,20 +121,20 @@ fn spec_stdlib_math_and_time_examples() {
 #[test]
 fn spec_stdlib_iteration_examples() {
     assert_eq!(
-        eval_i64("let s = 0\nfor i in range(0, 5) { s += i }\ns"),
+        eval_i64("mut s = 0\nfor i in range(0, 5) { s += i }\ns"),
         10
     );
-    assert_eq!(eval_i64("let s = 0\nfor i in 5 { s += i }\ns"), 10);
+    assert_eq!(eval_i64("mut s = 0\nfor i in 5 { s += i }\ns"), 10);
     assert_eq!(
-        eval_i64("let s = 0\nfor [k, v] in { a: 1, b: 2 } { s += v }\ns"),
+        eval_i64("mut s = 0\nfor [k, v] in { a: 1, b: 2 } { s += v }\ns"),
         3
     );
     assert_eq!(
-        eval_i64("let s = 0\nfor [i, v] in [10, 20].enumerate() { s += v }\ns"),
+        eval_i64("mut s = 0\nfor [i, v] in [10, 20].enumerate() { s += v }\ns"),
         30
     );
     assert_eq!(
-        eval_string("let out = \"\"\nfor ch in \"Ada\" { out += ch }\nout"),
+        eval_string("mut out = \"\"\nfor ch in \"Ada\" { out += ch }\nout"),
         "Ada"
     );
 }

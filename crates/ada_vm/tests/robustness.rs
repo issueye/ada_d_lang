@@ -110,8 +110,9 @@ fn string_index_is_char_based_and_out_of_range_yields_nil() {
     assert_eq!(expect_ok("\"语言\"[1]"), Value::string("言"));
     assert_eq!(expect_ok("\"Ada 语言\"[4]"), Value::string("语"));
     assert_eq!(expect_ok("\"abc\"[5]"), Value::Nil);
-    // 负索引当前不支持（数组与字符串一致），统一方案见 SPEC_LANGUAGE §5.5 缺口 G-L14
-    assert_eq!(expect_ok("\"abc\"[-1]"), Value::Nil);
+    // T3.5：负索引从末尾计数（数组与字符串一致，与 `.slice` 对齐）
+    assert_eq!(expect_ok("\"abc\"[-1]"), Value::string("c"));
+    assert_eq!(expect_ok("\"abc\"[-4]"), Value::Nil);
 }
 
 #[test]

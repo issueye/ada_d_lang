@@ -145,6 +145,8 @@ pub enum Instruction {
     Jump {
         offset: i32,
     },
+    /// 没有 `match` arm 匹配：抛出运行时错误（T3.2）
+    MatchFail,
     JumpIfFalse {
         cond: Reg,
         offset: i32,

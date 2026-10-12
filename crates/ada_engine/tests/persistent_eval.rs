@@ -19,6 +19,19 @@ fn top_level_bindings_persist_across_evaluations() {
 }
 
 #[test]
+fn immutability_is_enforced_within_a_program_but_not_across_evaluations() {
+    let mut engine = Engine::new();
+    // 同一程序内：`let` 绑定不可写（T3.1，编译期报错）
+    let err = engine.eval::<Value>("let b = 1\nb = 2").unwrap_err();
+    assert!(matches!(err, Error::Compile(_)), "got {err:?}");
+
+    // 跨轮求值：上一轮的顶层绑定已落到全局表，而全局变量不带可变性信息（缺口 G-L17）
+    engine.eval::<Value>("let c = 1").unwrap();
+    let updated: i64 = engine.eval("c = 5\nc").unwrap();
+    assert_eq!(updated, 5);
+}
+
+#[test]
 fn functions_defined_in_one_evaluation_are_callable_in_the_next() {
     let mut engine = Engine::new();
     engine
@@ -93,7 +106,7 @@ fn without_fuel_no_limit_is_enforced() {
     assert_eq!(engine.get_fuel(), None);
     assert_eq!(engine.remaining_fuel(), None);
     let value: i64 = engine
-        .eval("let s = 0\nfor i in range(0, 200) { s += i }\ns")
+        .eval("mut s = 0\nfor i in range(0, 200) { s += i }\ns")
         .unwrap();
     assert_eq!(value, 19900);
 }

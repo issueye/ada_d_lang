@@ -1,6 +1,6 @@
 use crate::instruction::{Constant, FunctionProto, Instruction, Reg, UpvalueDesc};
 use ada_ast::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -11,6 +11,8 @@ pub enum CompileError {
     TooManyRegisters,
     #[error("Invalid assignment target")]
     InvalidAssignmentTarget,
+    #[error("Cannot assign to immutable variable '{0}' (declare it with `mut`)")]
+    AssignToImmutable(String),
 }
 
 struct Local {
@@ -19,6 +21,8 @@ struct Local {
     depth: usize,
     /// 是否已装箱为 `Value::Cell`（T2.2：被嵌套函数捕获的变量）
     boxed: bool,
+    /// 是否可重新赋值（T3.1：`let` 为 false；`mut`、参数、循环变量、match 绑定为 true）
+    is_mut: bool,
 }
 
 pub struct Compiler {
@@ -34,10 +38,13 @@ pub struct Compiler {
     boxed_names: HashSet<String>,
     /// 本函数声明的 upvalue 名字，顺序即 `UpvalueGet`/`UpvalueSet` 的下标
     upvalue_names: Vec<String>,
-    /// 本函数可见的**外层**名字（T2.2）：由父编译器在创建子编译器时传入。
-    /// 只放名字，具体来源（父局部 / 父 upvalue）由父层在子编译完成后解析，
-    /// 这样多级嵌套时中间层即使不直接引用也能把捕获链传递下去。
-    outer_names: HashSet<String>,
+    /// 与 `upvalue_names` 一一对应：该捕获是否可写（T3.1）
+    upvalue_mutable: Vec<bool>,
+    /// 本函数可见的**外层**名字（T2.2）→ 是否可写（T3.1）。
+    /// 由父编译器在创建子编译器时传入；具体来源（父局部 / 父 upvalue）由父层
+    /// 在子编译完成后解析，这样多级嵌套时中间层即使不直接引用也能把捕获链
+    /// 与可变性传递下去。
+    outer_names: HashMap<String, bool>,
 }
 
 struct LoopContext {
@@ -57,7 +64,8 @@ impl Compiler {
             is_module_scope: false,
             boxed_names: HashSet::new(),
             upvalue_names: Vec::new(),
-            outer_names: HashSet::new(),
+            upvalue_mutable: Vec::new(),
+            outer_names: HashMap::new(),
         };
         comp.max_reg = comp.max_reg.max(arity);
         comp
@@ -65,8 +73,8 @@ impl Compiler {
 
     /// 准备编译一个函数体（T2.2）：
     /// 1. 预扫描出"被嵌套函数引用过的名字"，用于决定哪些局部变量要装箱；
-    /// 2. 记录外层可见名字的捕获来源。
-    fn prepare_body(&mut self, body: &Expr, outer_names: HashSet<String>) {
+    /// 2. 记录外层可见名字及其可变性（T3.1 用于跨闭包校验）。
+    fn prepare_body(&mut self, body: &Expr, outer_names: HashMap<String, bool>) {
         self.boxed_names = collect_names_in_nested_fns(body);
         self.outer_names = outer_names;
     }
@@ -85,25 +93,24 @@ impl Compiler {
     /// 只有**已装箱**的局部变量能作为捕获来源——预扫描保证被嵌套函数引用的
     /// 局部变量一定已装箱；同时把本函数自己的 `outer_names` 继续向下传递，
     /// 以支持"中间层不直接引用"的多级捕获。
-    fn visible_outer_names(&self) -> HashSet<String> {
+    fn visible_outer_names(&self) -> HashMap<String, bool> {
         let mut names = self.outer_names.clone();
         for local in &self.locals {
             if local.boxed {
-                names.insert(local.name.clone());
+                names.insert(local.name.clone(), local.is_mut);
             }
         }
         names
     }
 
-    /// 把名字解析为 upvalue 下标（T2.2）：只登记名字，描述符由父层解析。
+    /// 把名字解析为 upvalue 下标（T2.2）：只登记名字与可变性，描述符由父层解析。
     fn resolve_upvalue(&mut self, name: &str) -> Option<u16> {
-        if !self.outer_names.contains(name) {
-            return None;
-        }
+        let mutable = *self.outer_names.get(name)?;
         if let Some(idx) = self.upvalue_names.iter().position(|n| n == name) {
             return Some(idx as u16);
         }
         self.upvalue_names.push(name.to_string());
+        self.upvalue_mutable.push(mutable);
         Some((self.upvalue_names.len() - 1) as u16)
     }
 
@@ -112,7 +119,7 @@ impl Compiler {
     /// - 命中本层已装箱局部变量 → `ParentLocal`
     /// - 否则通过 `resolve_upvalue` 在本层物化该捕获（可能继续向上传递）→ `ParentUpvalue`
     fn resolve_capture_source(&mut self, name: &str) -> Result<UpvalueDesc, CompileError> {
-        if let Some((reg, _)) = self.resolve_local(name) {
+        if let Some((reg, _, _)) = self.resolve_local(name) {
             return Ok(UpvalueDesc::ParentLocal(reg.0));
         }
         self.resolve_upvalue(name)
@@ -277,20 +284,21 @@ impl Compiler {
         }
     }
 
-    fn define_local(&mut self, name: String, reg: Reg, boxed: bool) {
+    fn define_local(&mut self, name: String, reg: Reg, boxed: bool, is_mut: bool) {
         self.locals.push(Local {
             name,
             reg,
             depth: self.scope_depth,
             boxed,
+            is_mut,
         });
     }
 
-    /// 返回 (寄存器, 是否装箱)。
-    fn resolve_local(&self, name: &str) -> Option<(Reg, bool)> {
+    /// 返回 (寄存器, 是否装箱, 是否可写)。
+    fn resolve_local(&self, name: &str) -> Option<(Reg, bool, bool)> {
         for local in self.locals.iter().rev() {
             if local.name == name {
-                return Some((local.reg, local.boxed));
+                return Some((local.reg, local.boxed, local.is_mut));
             }
         }
         None
@@ -317,7 +325,11 @@ impl Compiler {
     pub fn compile_stmt(&mut self, stmt: &Stmt, dst: Option<Reg>) -> Result<(), CompileError> {
         match stmt {
             Stmt::Let {
-                name, init, span, ..
+                name,
+                is_mut,
+                init,
+                span,
+                ..
             } => {
                 let reg = self.alloc_reg()?;
                 let boxed = self.is_boxed(name);
@@ -331,7 +343,8 @@ impl Compiler {
                     self.proto
                         .emit(Instruction::MakeCell { dst: reg, src: reg }, *span);
                 }
-                self.define_local(name.clone(), reg, boxed);
+                // T3.1：`let` 绑定不可重新赋值（`mut` 才可）
+                self.define_local(name.clone(), reg, boxed, *is_mut);
                 // T2.4：模块顶层的绑定同时写入全局表，使 REPL 跨行求值可见；
                 // 函数体内的顶层局部变量不会外泄（is_module_scope 为 false）。
                 if self.is_module_scope && self.scope_depth == 0 {
@@ -380,7 +393,7 @@ impl Compiler {
                             .proto
                             .emit(Instruction::MakeCell { dst: reg, src: reg }, *span);
                     }
-                    child.define_local(p.name.clone(), reg, boxed);
+                    child.define_local(p.name.clone(), reg, boxed, true);
                 }
                 let body_reg = child.alloc_reg()?;
                 child.compile_expr(body, body_reg)?;
@@ -410,7 +423,7 @@ impl Compiler {
                         *span,
                     );
                 }
-                self.define_local(name.clone(), fn_reg, false);
+                self.define_local(name.clone(), fn_reg, false, true);
                 if let Some(d) = dst {
                     self.proto.emit(
                         Instruction::Move {
@@ -528,7 +541,7 @@ impl Compiler {
                                 *span,
                             );
                         }
-                        self.define_local(name.clone(), val_reg, boxed);
+                        self.define_local(name.clone(), val_reg, boxed, true);
                     }
                     ForVar::Tuple(names) => {
                         for (i, name) in names.iter().enumerate() {
@@ -560,7 +573,7 @@ impl Compiler {
                                     *span,
                                 );
                             }
-                            self.define_local(name.clone(), item_reg, boxed);
+                            self.define_local(name.clone(), item_reg, boxed, true);
                         }
                     }
                 }
@@ -708,7 +721,7 @@ impl Compiler {
             },
 
             Expr::Ident(name, _) => {
-                if let Some((local_reg, boxed)) = self.resolve_local(name) {
+                if let Some((local_reg, boxed, _)) = self.resolve_local(name) {
                     if boxed {
                         if local_reg == dst {
                             // 目标就是变量槽本身：借道临时寄存器，避免覆盖 Cell
@@ -953,7 +966,11 @@ impl Compiler {
 
                 match &**target {
                     Expr::Ident(name, _) => {
-                        if let Some((local_reg, boxed)) = self.resolve_local(name) {
+                        if let Some((local_reg, boxed, is_mut)) = self.resolve_local(name) {
+                            // T3.1：`let`（非 mut）绑定不可重新赋值
+                            if !is_mut {
+                                return Err(CompileError::AssignToImmutable(name.clone()));
+                            }
                             if boxed {
                                 self.emit_boxed_assign(local_reg, *op, val_reg, dst, span)?;
                             } else {
@@ -982,6 +999,10 @@ impl Compiler {
                                 );
                             }
                         } else if let Some(idx) = self.resolve_upvalue(name) {
+                            // T3.1：捕获来的不可变绑定同样不可写
+                            if !self.upvalue_mutable[idx as usize] {
+                                return Err(CompileError::AssignToImmutable(name.clone()));
+                            }
                             match op {
                                 AssignOp::Assign => {
                                     self.proto
@@ -1263,7 +1284,7 @@ impl Compiler {
                             .proto
                             .emit(Instruction::MakeCell { dst: reg, src: reg }, span);
                     }
-                    child.define_local(p.name.clone(), reg, boxed);
+                    child.define_local(p.name.clone(), reg, boxed, true);
                 }
                 let body_reg = child.alloc_reg()?;
                 child.compile_expr(body, body_reg)?;
@@ -1349,6 +1370,8 @@ impl Compiler {
                 self.compile_expr(target, t_reg)?;
 
                 let mut end_jumps = Vec::new();
+                // T3.2：是否存在"不可反驳"的 arm（`_` 或无 guard 的标识符绑定）
+                let mut has_irrefutable = false;
 
                 for arm in arms {
                     let mut arm_skip_jumps = Vec::new();
@@ -1356,8 +1379,12 @@ impl Compiler {
                     match &arm.pattern {
                         Pattern::Wildcard => {
                             // Always matches
+                            has_irrefutable = true;
                         }
                         Pattern::Ident(name) => {
+                            if arm.guard.is_none() {
+                                has_irrefutable = true;
+                            }
                             // 绑定到独立寄存器，避免装箱污染匹配目标（T2.2）
                             let bind_reg = self.alloc_reg()?;
                             self.proto.emit(
@@ -1377,7 +1404,7 @@ impl Compiler {
                                     arm.span,
                                 );
                             }
-                            self.define_local(name.clone(), bind_reg, boxed);
+                            self.define_local(name.clone(), bind_reg, boxed, true);
                         }
                         Pattern::Literal(lit) => {
                             let lit_reg = self.alloc_reg()?;
@@ -1521,6 +1548,11 @@ impl Compiler {
                             *o = offset;
                         }
                     }
+                }
+
+                // T3.2：没有不可反驳的 arm 时显式报错，而不是留下未赋值的匹配目标
+                if !has_irrefutable {
+                    self.proto.emit(Instruction::MatchFail, span);
                 }
 
                 // Patch all end jumps to end

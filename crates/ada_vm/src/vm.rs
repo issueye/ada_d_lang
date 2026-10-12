@@ -1,5 +1,6 @@
 use crate::value::{AdapterKind, Closure, IteratorState, Value};
 use ada_bytecode::{Constant, FunctionProto, Instruction};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -29,6 +30,9 @@ pub enum VmError {
 
     #[error("Native function error: {0}")]
     NativeError(String),
+
+    #[error("No `match` arm matched the value (non-exhaustive match); add a `_` arm")]
+    NoMatch,
 }
 
 /// 整数算术溢出（含 `i64::MIN` 取负、`i64::MIN % -1` 这类 checked 边界）统一转为
@@ -44,8 +48,20 @@ fn shift_err(op: &str) -> VmError {
     ))
 }
 
-/// 数值求和（全局 `sum` / `.sum()` / 迭代器适配器共用）。
+/// 有序比较（`<` `<=` `>` `>=`）只接受数值操作数（T3.5）。
 ///
+/// 返回 `None` 表示任一操作数是 NaN（按 IEEE，所有有序比较均为 false）；
+/// 非数值操作数直接报错，而不是静默返回 `false`。
+fn compare_numeric(a: &Value, b: &Value, op: &str) -> Result<Option<Ordering>, VmError> {
+    let (Some(x), Some(y)) = (a.as_float(), b.as_float()) else {
+        return Err(VmError::TypeError(format!(
+            "Cannot compare {a:?} and {b:?} with `{op}` (only numbers are orderable)"
+        )));
+    };
+    Ok(x.partial_cmp(&y))
+}
+
+/// 数值求和（全局 `sum` / `.sum()` / 迭代器适配器共用）。
 /// 全整数保持 Int；出现 Float 则整体 Float；非数值元素忽略（与既有 `sum` 行为一致）。
 /// 整数累加使用 checked 运算，溢出返回错误而不是 panic。
 fn sum_values(items: &[Value]) -> Result<Value, VmError> {
@@ -586,6 +602,9 @@ impl Vm {
                             Value::Int(x.checked_rem(*y).ok_or_else(|| overflow_err("%"))?)
                         }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
+                        // T3.5：混合数值类型统一提升为 float 取模（与 `/` 提升规则一致）
+                        (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 % y),
+                        (Value::Float(x), Value::Int(y)) => Value::Float(x % *y as f64),
                         _ => {
                             return Err(VmError::TypeError(format!("Cannot modulo {a:?} by {b:?}")))
                         }
@@ -634,52 +653,34 @@ impl Vm {
                 Instruction::Lt { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => x < y,
-                        (Value::Float(x), Value::Float(y)) => x < y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) < *y,
-                        (Value::Float(x), Value::Int(y)) => *x < (*y as f64),
-                        _ => false,
-                    };
+                    let res = matches!(compare_numeric(a, b, "<")?, Some(Ordering::Less));
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Le { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => x <= y,
-                        (Value::Float(x), Value::Float(y)) => x <= y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) <= *y,
-                        (Value::Float(x), Value::Int(y)) => *x <= (*y as f64),
-                        _ => false,
-                    };
+                    let res = matches!(
+                        compare_numeric(a, b, "<=")?,
+                        Some(Ordering::Less | Ordering::Equal)
+                    );
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Gt { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => x > y,
-                        (Value::Float(x), Value::Float(y)) => x > y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) > *y,
-                        (Value::Float(x), Value::Int(y)) => *x > (*y as f64),
-                        _ => false,
-                    };
+                    let res = matches!(compare_numeric(a, b, ">")?, Some(Ordering::Greater));
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Ge { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => x >= y,
-                        (Value::Float(x), Value::Float(y)) => x >= y,
-                        (Value::Int(x), Value::Float(y)) => (*x as f64) >= *y,
-                        (Value::Float(x), Value::Int(y)) => *x >= (*y as f64),
-                        _ => false,
-                    };
+                    let res = matches!(
+                        compare_numeric(a, b, ">=")?,
+                        Some(Ordering::Greater | Ordering::Equal)
+                    );
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
@@ -744,6 +745,11 @@ impl Vm {
                 Instruction::Jump { offset } => {
                     self.frames[frame_idx].ip =
                         (self.frames[frame_idx].ip as i32 + offset) as usize;
+                }
+
+                Instruction::MatchFail => {
+                    // T3.2：非穷尽 match 的显式失败路径
+                    return Err(VmError::NoMatch);
                 }
 
                 Instruction::JumpIfFalse { cond, offset } => {
@@ -892,10 +898,13 @@ impl Vm {
                     let res = match (t, idx_val) {
                         (Value::Array(arr), Value::Int(i)) => {
                             let items = arr.read().unwrap();
-                            if *i < 0 || *i as usize >= items.len() {
+                            // T3.5：负索引从末尾计数（与 `.slice` 一致）
+                            let len = items.len() as i64;
+                            let idx = if *i < 0 { len + *i } else { *i };
+                            if idx < 0 || idx >= len {
                                 Value::Nil
                             } else {
-                                items[*i as usize].clone()
+                                items[idx as usize].clone()
                             }
                         }
                         (Value::Map(m), key) => {
@@ -903,12 +912,14 @@ impl Vm {
                             map.get(&key.to_string()).cloned().unwrap_or(Value::Nil)
                         }
                         (Value::String(s), Value::Int(i)) => {
-                            // 按 Unicode 字符索引（T1.4）；负索引当前返回 nil（统一由 T3.5 决策）
-                            if *i < 0 {
+                            // T3.5：按 Unicode 字符索引，负索引从末尾计数
+                            let char_count = s.chars().count() as i64;
+                            let idx = if *i < 0 { char_count + *i } else { *i };
+                            if idx < 0 || idx >= char_count {
                                 Value::Nil
                             } else {
                                 s.chars()
-                                    .nth(*i as usize)
+                                    .nth(idx as usize)
                                     .map(|c| Value::string(c.to_string()))
                                     .unwrap_or(Value::Nil)
                             }
@@ -926,8 +937,11 @@ impl Vm {
                     match (t, idx_val) {
                         (Value::Array(arr), Value::Int(i)) => {
                             let mut items = arr.write().unwrap();
-                            if *i >= 0 && (*i as usize) < items.len() {
-                                items[*i as usize] = v;
+                            // T3.5：负索引从末尾计数
+                            let len = items.len() as i64;
+                            let idx = if *i < 0 { len + *i } else { *i };
+                            if idx >= 0 && idx < len {
+                                items[idx as usize] = v;
                             } else {
                                 return Err(VmError::IndexOutOfBounds {
                                     index: *i,

@@ -403,7 +403,19 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Int(n) => write!(f, "{n}"),
-            Value::Float(fl) => write!(f, "{fl}"),
+            Value::Float(fl) => {
+                // T3.6：整数值的浮点保留小数位，避免与 int 在输出上混淆（1.0 而非 1）；
+                // 极大/极小值改用科学计数法，避免打印出几百位数字
+                let magnitude = fl.abs();
+                if fl.is_finite() && fl.fract() == 0.0 && magnitude < 1e15 {
+                    write!(f, "{fl:.1}")
+                } else if fl.is_finite() && (magnitude >= 1e15 || (*fl != 0.0 && magnitude < 1e-10))
+                {
+                    write!(f, "{fl:e}")
+                } else {
+                    write!(f, "{fl}")
+                }
+            }
             Value::String(s) => write!(f, "{s}"),
             Value::Array(arr) => {
                 let items = arr.read().unwrap();

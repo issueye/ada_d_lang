@@ -1,5 +1,39 @@
+use ada_ast::Span;
 use ada_lexer::LexError;
 use thiserror::Error;
+
+/// 把片段词法错误的位置映射回源文件（T3.4），规则与 `Parser::from_fragment` 一致。
+pub(crate) fn shift_lex_error(err: LexError, base: Span) -> LexError {
+    let shift = |line: usize, col: usize| -> (usize, usize) {
+        if line == 1 {
+            (line + base.line - 1, col + base.col - 1)
+        } else {
+            (line + base.line - 1, col)
+        }
+    };
+    match err {
+        LexError::UnexpectedChar { ch, line, col } => {
+            let (line, col) = shift(line, col);
+            LexError::UnexpectedChar { ch, line, col }
+        }
+        LexError::UnterminatedString { line, col } => {
+            let (line, col) = shift(line, col);
+            LexError::UnterminatedString { line, col }
+        }
+        LexError::UnterminatedBlockComment { line, col } => {
+            let (line, col) = shift(line, col);
+            LexError::UnterminatedBlockComment { line, col }
+        }
+        LexError::InvalidNumber { raw, line, col } => {
+            let (line, col) = shift(line, col);
+            LexError::InvalidNumber { raw, line, col }
+        }
+        LexError::UnterminatedInterpExpr { line, col } => {
+            let (line, col) = shift(line, col);
+            LexError::UnterminatedInterpExpr { line, col }
+        }
+    }
+}
 
 #[derive(Debug, Error, PartialEq)]
 pub enum ParseError {
