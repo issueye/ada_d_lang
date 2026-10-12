@@ -258,26 +258,58 @@ struct Vm {
 
 ## 7. Fuel 与资源熔断
 
-### 7.1 Fuel ✅⚠️
+> 能力开关（哪些宿主模块可见、`env` 白名单、三档 profile）见 [§10 沙箱与权限模型](#10-沙箱与权限模型)；
+> 本节只讲**资源限额**：燃料、内存、墙钟、任务数。
+
+### 7.1 限额总览（M5 / T5.3 / T5.4）✅⚠️
+
+| 限额 | 配置项 | 默认值 | 强制点 |
+| :--- | :--- | :--- | :--- |
+| 指令燃料 | `fuel` / `set_fuel` | 不限 | 每条指令扣 1，归零 `OutOfFuel` |
+| 内存（近似） | `max_memory_bytes` | strict 16 MiB / standard 64 MiB | `MemoryBudget`：VM 指令（容器/字符串/`+`/适配器物化）+ 原生原型（`push`/`insert`/`split`）+ 迭代器物化**前**的长度预检查 |
+| 墙钟 | `max_wall_clock_ms` | strict 5 s / standard 不限 | 每 4096 条指令检查一次；**调度器等待处**也检查并把睡眠裁剪到剩余预算 |
+| 并发任务数 | `max_tasks` | strict 128 / standard 512 | `spawn` 时统计存活任务；每次 spawn 另计入内存 |
+| 调用栈深度 | 固定 | 512 帧 | 既有 |
+| 每帧寄存器数 | 固定 | 10,000 | 既有 |
+
+| 能力 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| 超限错误可断言 | ✅ | `MemoryLimitExceeded { limit, requested }`、`WallClockLimitExceeded { limit_ms }`、`TaskLimitExceeded { limit }`；原生原型路径为 `NativeError("memory limit exceeded: …")` |
+| 大对象预检查 | ✅ | `range(0, 1e8) \|> collect()` 在分配前被拒（实测拒绝耗时 < 200ms，无内存峰值） |
+| `json.parse`/`stringify` 字节上限 | ✅ | 与内存预算同值，避免单条原生指令吃掉全部预算 |
+| 计量精度 | ❌ | 不做分配器级精确计量：宿主源码文本按上限处理，预算是**上界约束** |
+
+> **计量语义（重要）**：预算是**上界约束**，不是精确账本。它的保证是：脚本无法在不被拒绝的
+> 前提下，用容器增长、字符串拼接、迭代器物化或任务创建把宿主内存/时间耗尽。
+
+### 7.2 Fuel ✅
 
 | 能力 | 状态 |
 | :--- | :--- |
-| `Vm::set_fuel(Some(n))` / `Engine::set_fuel` | ✅ |
+| `Vm::set_fuel(Some(n))` / `Engine::set_fuel` / `Sandbox::with_fuel` | ✅ |
 | 每执行一条指令扣减 1，归零返回 `VmError::OutOfFuel` | ✅ |
 | 死循环可被中断（`while true {}` 实测可中断） | ✅ |
-| **每次 `execute()` 重新装填** | ⚠️ 未实现：fuel 原地递减且不重置，一次耗尽后同一 `Engine` 永久失效（T2.6） |
-| `remaining_fuel` / `reset_fuel` 查询接口 | 📋（T2.6） |
-| 对阻塞型原生函数（`sleep_ms`）计费 | ❌ 无法中断（T4.3 / T5.4） |
+| 每次 `execute()` 重新装填（一次 `OutOfFuel` 不会永久失效） | ✅（T2.6） |
+| `remaining_fuel` / `reset_fuel` 查询接口 | ✅（T2.6） |
+| 与墙钟互补（fuel 管 CPU、墙钟管 I/O 与挂起等待） | ✅（M4/M5） |
 
-### 7.2 其他资源限制
+### 7.3 内存与墙钟限额（M5 / T5.3 / T5.4）✅⚠️
 
-| 能力 | 状态 | 任务 |
+| 能力 | 状态 | 说明 |
 | :--- | :--- | :--- |
-| 调用栈深度上限（512 帧） | ✅ | — |
-| 寄存器数上限（10,000/帧） | ✅ | — |
-| 内存预算 `MaxMemoryLimit` | 📋 | T5.3 |
-| 墙钟超时（wall-clock timeout） | 📋 | T5.4 |
-| 宿主 panic 兜底（`catch_unwind`） | 📋 | T1.7 |
+| 内存预算 `max_memory_bytes` | ✅⚠️ | **近似计量**：VM 在 `NewArray`/`MapSet`/`SetIndex`/字符串拼接（`StringConcat` 与 `+`）/适配器物化处计费，原生原型（`push`/`insert`/`split`）通过共享的原子计数器计费 |
+| 大对象预检查 | ✅ | 迭代器物化**前**按长度估算拒绝（`range(0, 1e8) \|> collect()` 不会先分配），因此拒绝是瞬时且无内存峰值的 |
+| `json.parse`/`stringify` 字节上限 | ✅ | 与内存预算同值，避免"一条原生指令吃掉全部预算" |
+| 超限错误 | ✅ | VM 路径 `VmError::MemoryLimitExceeded { limit, requested }`；原生原型路径 `NativeError("memory limit exceeded: …")` |
+| 墙钟预算 `max_wall_clock_ms` | ✅ | 每 4096 条指令检查一次；**调度器等待处也检查**，并把睡眠裁剪到剩余预算 |
+| 超限错误 | ✅ | `VmError::WallClockLimitExceeded { limit_ms }` |
+| 任务数上限 `max_tasks` | ✅ | `spawn` 时检查存活任务数；每次 spawn 也计入内存 |
+| 调用栈深度上限（512 帧）/ 寄存器数上限（10,000/帧） | ✅ | 既有 |
+| 精确分配器级计量 | ❌ | 不做：计量是"放大路径覆盖"而非逐字节精确（宿主源码文本、`json` 输入等按上限处理） |
+| 宿主 panic 兜底（`catch_unwind`） | 📋 | T1.7（脚本级 panic 已在 M1 清零） |
+
+> **计量语义（重要）**：预算是**上界约束**，不是精确账本。它的保证是：脚本无法在不被拒绝的
+> 前提下，用容器增长、字符串拼接、迭代器物化或任务创建把宿主内存/时间耗尽。
 
 ---
 
@@ -288,8 +320,8 @@ struct Vm {
 | `LexError` | `UnexpectedChar` `UnterminatedString` `UnterminatedBlockComment` `InvalidNumber` `UnterminatedInterpExpr` | 词法阶段 |
 | `ParseError` | `UnexpectedToken` `UnexpectedEof` `InvalidAssignmentTarget` `Lex(..)` | 语法阶段 |
 | `CompileError` | `VariableNotFound` `TooManyRegisters` `InvalidAssignmentTarget` **`AssignToImmutable`** | 编译阶段（T3.1：向 `let` 绑定赋值） |
-| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` `NoMatch` **`TaskFailed` `TaskCancelled` `TaskDeadlock`** | 运行阶段（T3.2 非穷尽 `match`；M4 任务错误传播/取消/死锁） |
-| `ada_engine::Error` | `Parse` `Compile` `Vm` `Conversion` | 宿主门面统一封装 |
+| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` `NoMatch` `TaskFailed` `TaskCancelled` `TaskDeadlock` **`CapabilityDenied` `MemoryLimitExceeded` `WallClockLimitExceeded` `TaskLimitExceeded`** | 运行阶段（T3.2 非穷尽 `match`；M4 任务错误；M5 沙箱与资源限额） |
+| `ada_engine::Error` | `Parse` `Compile` `Vm` `Conversion` **`ModuleConflict`** | 宿主门面统一封装 |
 
 | 规范要求 | 状态 |
 | :--- | :--- |
@@ -362,28 +394,37 @@ fn main() -> Result<(), ada_engine::Error> {
 
 ## 10. 沙箱与权限模型
 
-### 10.1 现状 ⚠️（等同于"无沙箱"）
+### 10.1 现状 ✅（M5 已落地，见 §7.1 与 [SPEC_ASYNC](SPEC_ASYNC.md)）
 
-| 面 | 现状 | 风险 |
+| 面 | 实现 | 强制点 |
 | :--- | :--- | :--- |
-| 模块可见性 | `json` / `math` / `time` / `sys` / `env` **全部默认可用** | 无法做纯计算隔离 |
-| `env.get` | 直接读宿主环境变量，**无白名单**（实测可读 `PATH`、`USERPROFILE`） | 敏感信息泄漏 |
-| 内存 | 无预算 | 可被超大容器耗尽 |
-| 阻塞 | `sleep_ms` 阻塞宿主线程 | 可拖死调用方 |
-| 崩溃 | 脚本可触发 panic（§6） | 宿主进程崩溃 |
-| 文件/网络 | 未提供 | 暂无越权面 |
+| 模块可见性 | `Engine::new()` 默认 **strict**：只注册 `json`/`math` 与语言内置；`time`/`sys`/`env`/`sleep_ms` **不注册** | `builtins::register_all(globals, &sandbox)` |
+| 越权错误 | `VmError::CapabilityDenied { name, profile }` | `Instruction::GetGlobal` 的拒绝名单 |
+| `env` 读取 | 只读宿主显式声明的键；未授权键返回 `nil`/`false` 且**不触碰** `std::env` | 白名单在模块创建时捕获进闭包 |
+| 内存 | `MemoryBudget`（近似、共享原子计数器）+ 大对象分配前预检查 | VM 指令 + 原生原型 + 迭代器物化 |
+| 时间/挂起 | 墙钟预算在指令循环与调度等待处检查；睡眠裁剪到剩余预算 | `Vm::check_wall_clock` |
+| 崩溃 | 脚本输入不再触发宿主 panic（M1 清零），敌意输入返回 `Err` | 11 条敌意用例回归 |
+| 文件/网络 | 未提供任何 API（无越权面） | — |
 
-### 10.2 目标模型 📋
-
-三档 profile（任务 T5.1）：
+### 10.2 三档 profile 与用途 ✅
 
 | Profile | 允许 | 用途 |
 | :--- | :--- | :--- |
-| `Strict`（默认） | 纯计算 + `json` + `math` + 字符串/集合原型 | AI 生成代码的默认执行环境 |
-| `Standard` | `Strict` + `time` + `env` 白名单 | 需要时间/配置的宿主 |
-| `Custom` | 宿主显式注册的模块集合 | 业务扩展 |
+| `strict()`（`Engine::new()` 默认） | 纯计算 + `json` + `math` + 字符串/集合原型 + 任务 | AI 生成代码的默认执行环境 |
+| `standard()` | strict + `time` + `sys` + `env`（键白名单）+ `sleep_ms` | 需要时间/配置的宿主、CLI 默认档 |
+| `permissive()` | 全部（等效 M5 之前） | 受信场景、兼容性开关、测试 |
+| 自定义 builder | 逐项开关 + 限额 | 业务按需授权 |
 
-配套：`MaxMemoryLimit`（T5.3）、跳墙钟超时（T5.4）、`NativeModule` trait（T5.5）、权限测试集（T5.6）。
+配套：`max_memory_bytes`（T5.3）、`max_wall_clock_ms`（T5.4）、`max_tasks`、`NativeModule`/`register_module`（T5.5）、
+安全测试集 `crates/ada_engine/tests/security.rs`（T5.6，21 用例）。
+
+### 10.3 权限设计原则
+
+1. **默认拒绝**：宿主能力必须显式授予；`Engine::new()` 不给出任何宿主面。
+2. **可区分错误**：能力被关闭 ≠ 名字不存在（`CapabilityDenied` vs `UndefinedGlobal`），便于宿主与 AI 修正。
+3. **不触碰即不泄漏**：`env` 未授权键在读取前就被拦截，避免"读了再判断"的侧信道与日志泄漏。
+4. **限额是上界**：内存/墙钟是近似约束，保证的是"无法在不被拒绝的前提下耗尽宿主"，而不是精确计量。
+5. **宿主注入优先**：`register_fn`/`register_module` 表示宿主显式授权，不受 profile 限制，但不得覆盖已有全局。
 
 ---
 

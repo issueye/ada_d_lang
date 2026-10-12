@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **156**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `doc_examples.rs` 14 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
+| 测试总数 | 34 | **178**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -118,6 +118,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 端到端 golden | 无 | ✅ `examples/showcase.ada` + `showcase.expected.txt` + `golden_showcase.rs` 逐行比对（14 个规范小节，含 `yield_now` 确定性交错） |
 | 异步并发 | `spawn` 立即求值、无调度、`sleep_ms` 阻塞线程（2×200ms 实测 401ms） | ✅ 单线程协作式事件循环（决策 D2）：`spawn` 惰性、任务可挂起/恢复、`sleep_ms` 走真实定时器（2×200ms 实测 **200ms**）、`timeout`/`cancel` 可用 |
 | 语义确定性 | `let` 可被重新赋值（不可变性不生效）、非穷尽 `match` 返回静默错误值、`5 < "a"` 静默 `false`、Float 与 Int 输出无法区分 | ✅ 全部收紧（T3.1/T3.2/T3.5/T3.6）：编译期不可变、`VmError::NoMatch`、比较报错、`1.0` 可区分；负索引统一（G-L14） |
+| 沙箱与资源限额 | 无沙箱：脚本可读 `env`/`sys`/`time`，内存与墙钟无上限（`Engine::new()` 即全权） | ✅ 默认 `strict`：能力不注册（`CapabilityDenied`）+ `env` 键白名单（不触碰宿主）+ 内存/墙钟/任务数预算（分配前预检查）；`permissive()` 保留旧行为 |
 
 ---
 
@@ -238,18 +239,20 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M5 · 沙箱与宿主安全 📋（预计 1–2 周）
+### M5 · 沙箱与宿主安全 ✅（预计 1–2 周）
 
-| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 |
+| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T5.1 | `SandboxProfile`：`Strict`（默认，仅纯计算 + json/math）/ `Standard`（+ time/env 白名单）/ `Custom` | W5 | P1 | `ada_engine/src/lib.rs`, `ada_vm/src/builtins/mod.rs` | `Strict` 下 `env.get`/`time.*` 抛权限错误 |
-| T5.2 | `env` 白名单：仅允许宿主显式声明的键 | W5/W3 | P1 | `builtins/sys.rs` | 未授权键返回 `nil` 且不读 host 环境 |
-| T5.3 | 内存预算 `MaxMemoryLimit`：值/容器规模追踪，超限返回专用错误 | W5/W2 | P2 | `ada_vm/src/{value,vm}.rs` | 超大数组分配被拒绝；错误类型可断言 |
-| T5.4 | 墙钟超时（wall-clock）：与 fuel 互补，防"单条指令长时间阻塞" | W5 | P2 | `ada_engine/src/lib.rs` | 死循环在 N ms 内被中断 |
-| T5.5 | `NativeModule` trait + `Engine::register_module` | W5 | P2 | `ada_engine`, `ada_vm` | 自定义模块可注册并被脚本调用（含测试） |
-| T5.6 | 安全测试集：越权访问、资源耗尽、panic 注入 | W6 | P1 | `crates/ada_engine/tests/security.rs` | ≥10 用例全绿 |
+| ✅ T5.1 | `Sandbox` profile：`strict()`（`Engine::new()` 默认，仅纯计算 + json/math）/ `standard()`（+ time/sys/env 白名单/sleep）/ `permissive()`（兼容旧行为）/ builder 自定义 | W5 | P1 | `ada_vm/src/sandbox.rs`, `builtins/mod.rs`, `ada_engine/src/lib.rs` | 完成证据：被关闭的能力**不注册**且访问报 `CapabilityDenied{name, profile}`（与 `UndefinedGlobal` 可区分）；`security.rs` 7 条能力用例 |
+| ✅ T5.2 | `env` 白名单：仅允许宿主显式声明的键 | W5/W3 | P1 | `builtins/sys.rs` | 完成证据：未授权键返回 `nil`/`false` 且**不调用** `std::env`（用宿主的 `PATH` 反证）；`env.allowed()` 可自省 |
+| ✅ T5.3 | 内存预算：容器/字符串/任务规模追踪，超限返回专用错误 | W5/W2 | P2 | `ada_vm/src/{vm,sandbox}.rs`, `builtins/*` | 完成证据：`MemoryBudget`（原子计数器）被 VM 指令与原生原型共享；大迭代器物化前预检查（拒绝耗时 < 200ms）；`push` 循环/字符串 `+=` 循环/超大 `json.parse` 全部被拒；`memory_used()` 可查，且每次求值重置 |
+| ✅ T5.4 | 墙钟超时：与 fuel 互补，防"单条指令长时间阻塞" | W5 | P2 | `ada_vm/src/vm.rs` | 完成证据：每 4096 条指令检查 + **调度器等待处检查并裁剪睡眠**；`while true {}` 在 200ms 预算下 150–2000ms 内被中断；`sleep_ms(5000)` 在 150ms 预算下不会真的等 5 秒 |
+| ✅ T5.5 | `NativeModule` trait + `Engine::register_module` | W5 | P2 | `ada_engine/src/lib.rs` | 完成证据：模块成为脚本可见的 map（`geometry.area(3.0, 4.0)`）；同名冲突（含覆盖内置模块）报 `Error::ModuleConflict`；宿主注入不受 profile 限制 |
+| ✅ T5.6 | 安全测试集：越权访问、资源耗尽、panic 注入 | W6 | P1 | `crates/ada_engine/tests/security.rs` | 完成证据：**21 个用例**（能力分级、env 白名单、内存 4 类、墙钟 2 类、fuel 独立性、任务上限、宿主注入与模块冲突、11 条敌意输入不 panic、permissive 兼容性） |
 
-**退出标准**：默认 `Strict` 配置下，脚本无法读取宿主环境、无法消耗无界内存、无法 panic 宿主。
+**退出标准**：✅ 达成 —— 默认 `strict` 下脚本读不到宿主环境/时间/系统信息（`CapabilityDenied`）、
+无法耗尽内存（专用错误 + 分配前预检查）、无法长期占用宿主（墙钟预算）、任何敌意输入都返回 `Err` 而不 panic 宿主；
+`permissive()` 保留 M5 之前的全部行为作为兼容开关。
 
 ---
 
@@ -305,7 +308,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 156 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 文档示例 14 + 多轮求值 8 + golden 3 + 文档门禁 2）。
+**当前状态**：`cargo test --workspace` → 178 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2）。
 
 ---
 
@@ -401,7 +404,7 @@ docs/
 | M2 语言核心补齐 | 1–2 周 | ✅ | ☑ |
 | M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位遗留） |
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
-| M5 沙箱安全 | 1–2 周 | 📋 | ☐ |
+| M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
 | M6 性能与 JIT | 3–6 周 | 📋 | ☐ |
 | M7 生态工具链 | 长期 | 📋 | ☐ |
 

@@ -7,6 +7,16 @@
 
 ### Added
 
+- **沙箱与宿主安全（M5 / T5.1–T5.6）**：`Engine::new()` 现在是**最小权限**（strict）。
+  - `Sandbox` 三档 profile + builder：`strict()`（仅纯计算 + `json`/`math`；内存 16 MiB / 墙钟 5s / 任务 128）、`standard()`（+ `time`/`sys`/`env` 白名单/`sleep_ms`）、`permissive()`（等效 M5 之前）。
+  - 被关闭的能力不注册到脚本名字空间，访问报 `VmError::CapabilityDenied { name, profile }`（与 `UndefinedGlobal` 可区分）。
+  - `env` 改为**键白名单**：未授权键返回 `nil`/`false` 且**不读**宿主环境；`env.allowed()` 可自省。
+  - 资源限额：内存 `MemoryBudget`（VM 指令与原生原型共享计数器；大迭代器物化**前**预检查）、墙钟预算（每 4096 条指令 + 调度器等待处检查，并裁剪睡眠）、任务数上限；新增 `VmError::MemoryLimitExceeded` / `WallClockLimitExceeded` / `TaskLimitExceeded`。
+  - `Vm::with_sandbox` / `set_sandbox`、`Engine::with_sandbox` / `set_sandbox` / `sandbox` / `permissive` / `memory_used`。
+- **宿主原生模块（M5 / T5.5）**：`NativeModule` trait + `Engine::register_module`；模块在脚本侧是普通 `map`（`geometry.area(3.0, 4.0)`），同名冲突报 `Error::ModuleConflict`。
+- CLI 新增 `--strict`（默认 `standard`）。
+- 测试：`crates/ada_engine/tests/security.rs`（21 个用例，覆盖越权、`env` 白名单、内存/墙钟/任务上限、模块注册、11 条敌意输入不 panic）。
+
 - **协作式并发运行时（M4 / T4.1–T4.3）**：`spawn`/`await` 从"语法占位"变为真实调度（决策 D2）。
   - `spawn f(a, b)` 只求值调用目标与实参并登记任务，**不在生成点执行任务体**；任务首次被调度时才运行。
   - 单线程协作式事件循环：每个任务持有独立的帧栈 + 寄存器窗口（`SavedExecution`），挂起点让出、按需恢复；就绪队列 FIFO 保证执行顺序确定。
@@ -60,6 +70,14 @@
 - `await_race` 的语义修正为「最先结算」（原为「数组首元素」）；`await_any` 为推荐名，`await_race` 保留为别名。
 - `sleep_ms` 不再阻塞宿主线程（M4）：在任务内挂起等待；仅在迭代器适配器回调（Rust 栈帧）内退化为真实阻塞。
 - `await_all`/`await_any` 的实参必须是任务数组：非任务元素不再被原样拷贝，而是报 `TypeError`。
+- **`Engine::new()` 的默认权限收紧为 strict 沙箱（M5，破坏性变更）**：脚本不再能直接使用
+  `time`/`sys`/`env`/`sleep_ms`，并受到内存/墙钟/任务数限额。迁移方式：
+  - 需要旧行为：`Engine::permissive()`；
+  - 需要部分宿主能力：`Engine::with_sandbox(Sandbox::standard())` 或
+    `Sandbox::strict().with_env_keys(["HOME"]).with_wall_clock_limit(Some(10_000))`。
+  直接使用 `Vm::new()` 的场合不受影响（仍是全量内置）。
+- `env.get`/`env.has` 只对白名单键读取宿主环境；白名单为空时读取任何键都得到 `nil`/`false`。
+- CLI 默认使用 `standard` 档（本地工具定位），`--strict` 可切换到最小权限。
 
 ### Changed
 

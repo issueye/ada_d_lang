@@ -3,7 +3,7 @@
 //! 本文件把 README 与 SPEC_* 规范中标注为"可运行 / 可直接编译"的示例固化为测试。
 //! 一旦规范文档里的示例与实际行为脱节，这里会立刻失败，从而阻止文档漂移。
 
-use ada_engine::Engine;
+use ada_engine::{Engine, Value};
 
 fn eval_i64(source: &str) -> i64 {
     let mut engine = Engine::new();
@@ -36,6 +36,56 @@ fn spec_runtime_embedding_example_with_exported_value() {
 
     let n: i64 = engine.eval("double(21)").unwrap();
     assert_eq!(n, 42);
+}
+
+/// README「Rust 宿主嵌入」中的能力分级与原生模块示例（M5）。
+#[test]
+fn readme_embedding_sandbox_and_module_example() {
+    use ada_engine::{NativeCallback, NativeModule, Sandbox};
+    use std::sync::Arc;
+
+    // 默认 strict：宿主函数仍然可用（宿主显式授权）
+    let mut engine = Engine::new();
+    engine.register_fn("now", |_| Ok(Value::Int(0)));
+    assert!(matches!(
+        engine.eval::<Value>("time.now_ms()"),
+        Err(ada_engine::Error::Vm(
+            ada_engine::VmError::CapabilityDenied { .. }
+        ))
+    ));
+
+    // 按需开档：能力与限额一起给
+    let sandbox = Sandbox::strict()
+        .with_time(true)
+        .with_env_keys(["HOME"])
+        .with_memory_limit(Some(8 * 1024 * 1024))
+        .with_wall_clock_limit(Some(2_000));
+    let mut engine = Engine::with_sandbox(sandbox);
+    assert!(engine.eval::<i64>("time.now_ms()").unwrap() > 0);
+
+    // 原生模块
+    struct Geometry;
+    impl NativeModule for Geometry {
+        fn name(&self) -> &str {
+            "geometry"
+        }
+        fn functions(&self) -> Vec<(String, NativeCallback)> {
+            vec![(
+                "area".to_string(),
+                Arc::new(|args: &[Value]| {
+                    let w = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
+                    let h = args.get(1).and_then(|a| a.as_float()).unwrap_or(0.0);
+                    Ok(Value::Float(w * h))
+                }),
+            )]
+        }
+    }
+    let mut engine = Engine::new();
+    engine.register_module(Geometry).unwrap();
+    assert_eq!(engine.eval::<f64>("geometry.area(3.0, 4.0)").unwrap(), 12.0);
+
+    // 受信场景
+    assert!(Engine::permissive().eval::<i64>("time.now_ms()").unwrap() > 0);
 }
 
 #[test]

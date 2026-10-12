@@ -123,7 +123,7 @@
 | 标准库（`json`/`math`/`time`/`sys`/`env` + 原型方法） | ✅ 主要能力齐备（字符串/数组/字典原型方法 + 13 个迭代器适配器） |
 | 统一迭代器协议 | ✅ `for..in` 已统一，`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`/`enumerate`/`rev`/`join`/`sum` 与方法链均可用；⚠️ 当前为即时求值（非惰性链，见决策 D3） |
 | 异步与并发 | ✅ M4 已完成：单线程协作式事件循环（决策 D2）——`spawn` 惰性执行、任务可挂起/恢复、`sleep_ms` 非阻塞（并发等待只花最长时间）、`await_all`/`await_any`/`timeout`/`cancel` 可用；❌ 无 CPU 并行、❌ 不引入 Tokio（见 [SPEC_ASYNC §4](SPEC_ASYNC.md)） |
-| 沙箱权限分级 / 内存预算 / 墙钟超时 | 📋 规划中 |
+| 沙箱权限分级 / 内存预算 / 墙钟超时 | ✅ M5 已完成：`Sandbox` 三档 profile（`Engine::new()` 默认 strict：仅纯计算 + json/math）、`env` 键白名单（未授权键不读宿主环境）、内存/墙钟/任务数预算（分配前预检查 + 挂起等待处检查）、`NativeModule` 宿主模块；21 个安全用例（见 [SPEC_RUNTIME §7](SPEC_RUNTIME.md)） |
 | Cranelift JIT / NaN-boxing 值模型 | 📋 规划中（白皮书早期版本曾将其描述为现状，现已修正为规划） |
 
 ---

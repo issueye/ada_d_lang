@@ -41,24 +41,60 @@ cargo test --workspace
 
 ### Rust 宿主嵌入（最小示例）
 
+`Engine::new()` 默认使用 **strict 沙箱**：脚本只能做纯计算（+ `json`/`math`），
+拿不到 `time`/`env`/`sys`/`sleep_ms`，并受限定的内存、墙钟与任务数。宿主能力必须**显式授予**。
+
 ```rust
-use ada_engine::Engine;
-use ada_vm::Value;   // ⚠️ 见下方说明：ada_engine 目前未 re-export Value（任务 T0.7）
+use ada_engine::{Engine, Sandbox, Value};
+use std::sync::Arc;
 
 fn main() -> Result<(), ada_engine::Error> {
+    // 1) 默认：最小权限。宿主函数注入不受 profile 限制（这是宿主的显式授权）。
     let mut engine = Engine::new();
     engine.set_fuel(Some(50_000));                  // 指令燃料熔断
     engine.register_fn("double", |args: &[Value]| {
         Ok(Value::Int(args[0].as_int().unwrap_or(0) * 2))
     });
+    assert_eq!(engine.eval::<i64>("double(21)")?, 42);
 
-    let n: i64 = engine.eval("double(21)")?;
-    assert_eq!(n, 42);
+    // 2) 需要宿主能力时按需开档（能力 + 资源限额一起给）
+    let sandbox = Sandbox::strict()
+        .with_time(true)                            // 允许 time.*
+        .with_env_keys(["HOME"])                    // 只放行这一个环境变量
+        .with_memory_limit(Some(8 * 1024 * 1024))   // 8 MiB 近似预算
+        .with_wall_clock_limit(Some(2_000));        // 单次求值 2 秒
+    let mut engine = Engine::with_sandbox(sandbox);
+    engine.register_fn("now", |_| Ok(Value::Int(0)));
+    let _: i64 = engine.eval("time.now_ms()")?;
+
+    // 3) 注册宿主原生模块：脚本侧表现为一个 map（`geometry.area(3.0, 4.0)`）
+    struct Geometry;
+    impl ada_engine::NativeModule for Geometry {
+        fn name(&self) -> &str { "geometry" }
+        fn functions(&self) -> Vec<(String, ada_engine::NativeCallback)> {
+            vec![(
+                "area".to_string(),
+                Arc::new(|args: &[Value]| {
+                    let w = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
+                    let h = args.get(1).and_then(|a| a.as_float()).unwrap_or(0.0);
+                    Ok(Value::Float(w * h))
+                }),
+            )]
+        }
+    }
+    let mut engine = Engine::new();
+    engine.register_module(Geometry)?;
+    assert_eq!(engine.eval::<f64>("geometry.area(3.0, 4.0)")?, 12.0);
+
+    // 4) 受信场景/兼容旧行为
+    let _permissive = Engine::permissive();
+
     Ok(())
 }
 ```
 
-> ⚠️ `ada_engine` 当前未 re-export `Value`/`VmError` 等公共类型（`Cargo.toml` 需显式依赖 `ada_vm`）。这是已知的嵌入体验缺口，修复任务见 [开发计划 T0.7](docs/DEVELOPMENT_PLAN.md)；修复后即可写回 `use ada_engine::{Engine, Value};`。
+三档 profile 与限额见 [SPEC_RUNTIME §7.1](docs/SPEC_RUNTIME.md)；越权/超限的行为与错误码见
+[SPEC_RUNTIME §7.3](docs/SPEC_RUNTIME.md)，安全测试集在 `crates/ada_engine/tests/security.rs`（21 个用例）。
 
 ---
 
