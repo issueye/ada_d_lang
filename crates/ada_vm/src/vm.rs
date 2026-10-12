@@ -31,6 +31,19 @@ pub enum VmError {
     NativeError(String),
 }
 
+/// 整数算术溢出（含 `i64::MIN` 取负、`i64::MIN % -1` 这类 checked 边界）统一转为
+/// 运行时错误，不允许 panic 逃逸到宿主进程（开发计划 §5 门禁第 3 条）。
+fn overflow_err(op: &str) -> VmError {
+    VmError::TypeError(format!("Integer overflow in `{op}`"))
+}
+
+/// 移位量必须落在 `0..64`，否则返回错误而不是 panic。
+fn shift_err(op: &str) -> VmError {
+    VmError::TypeError(format!(
+        "Shift amount out of range for `{op}` (expected 0..64)"
+    ))
+}
+
 struct CallFrame {
     proto: Arc<FunctionProto>,
     ip: usize,
@@ -164,7 +177,9 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x + y),
+                        (Value::Int(x), Value::Int(y)) => {
+                            Value::Int(x.checked_add(*y).ok_or_else(|| overflow_err("+"))?)
+                        }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 + y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
@@ -179,7 +194,9 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x - y),
+                        (Value::Int(x), Value::Int(y)) => {
+                            Value::Int(x.checked_sub(*y).ok_or_else(|| overflow_err("-"))?)
+                        }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x - y),
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 - y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x - *y as f64),
@@ -196,7 +213,9 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x * y),
+                        (Value::Int(x), Value::Int(y)) => {
+                            Value::Int(x.checked_mul(*y).ok_or_else(|| overflow_err("*"))?)
+                        }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x * y),
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 * y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x * *y as f64),
@@ -217,10 +236,13 @@ impl Vm {
                             if *y == 0 {
                                 return Err(VmError::TypeError("Division by zero".to_string()));
                             }
-                            if x % y == 0 {
-                                Value::Int(x / y)
-                            } else {
-                                Value::Float(*x as f64 / *y as f64)
+                            match x.checked_rem(*y) {
+                                // 整除保持 Int；i64::MIN / -1 会被 checked_rem 拦下
+                                Some(0) => {
+                                    Value::Int(x.checked_div(*y).ok_or_else(|| overflow_err("/"))?)
+                                }
+                                Some(_) => Value::Float(*x as f64 / *y as f64),
+                                None => return Err(overflow_err("/")),
                             }
                         }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x / y),
@@ -237,7 +259,12 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     let res = match (a, b) {
-                        (Value::Int(x), Value::Int(y)) => Value::Int(x % y),
+                        (Value::Int(x), Value::Int(y)) => {
+                            if *y == 0 {
+                                return Err(VmError::TypeError("Modulo by zero".to_string()));
+                            }
+                            Value::Int(x.checked_rem(*y).ok_or_else(|| overflow_err("%"))?)
+                        }
                         (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
                         _ => {
                             return Err(VmError::TypeError(format!("Cannot modulo {a:?} by {b:?}")))
@@ -249,7 +276,9 @@ impl Vm {
                 Instruction::Neg { dst, src } => {
                     let val = &self.registers[base + src.0 as usize];
                     let res = match val {
-                        Value::Int(n) => Value::Int(-n),
+                        Value::Int(n) => {
+                            Value::Int(n.checked_neg().ok_or_else(|| overflow_err("-"))?)
+                        }
                         Value::Float(f) => Value::Float(-f),
                         _ => return Err(VmError::TypeError(format!("Cannot negate {val:?}"))),
                     };
@@ -368,7 +397,11 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     if let (Value::Int(x), Value::Int(y)) = (a, b) {
-                        self.registers[base + dst.0 as usize] = Value::Int(x << y);
+                        let shifted = u32::try_from(*y)
+                            .ok()
+                            .and_then(|amount| x.checked_shl(amount))
+                            .ok_or_else(|| shift_err("<<"))?;
+                        self.registers[base + dst.0 as usize] = Value::Int(shifted);
                     } else {
                         return Err(VmError::TypeError("Shift requires integers".into()));
                     }
@@ -378,7 +411,11 @@ impl Vm {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     if let (Value::Int(x), Value::Int(y)) = (a, b) {
-                        self.registers[base + dst.0 as usize] = Value::Int(x >> y);
+                        let shifted = u32::try_from(*y)
+                            .ok()
+                            .and_then(|amount| x.checked_shr(amount))
+                            .ok_or_else(|| shift_err(">>"))?;
+                        self.registers[base + dst.0 as usize] = Value::Int(shifted);
                     } else {
                         return Err(VmError::TypeError("Shift requires integers".into()));
                     }
@@ -538,10 +575,14 @@ impl Vm {
                             map.get(&key.to_string()).cloned().unwrap_or(Value::Nil)
                         }
                         (Value::String(s), Value::Int(i)) => {
-                            if *i < 0 || *i as usize >= s.len() {
+                            // 按 Unicode 字符索引（T1.4）；负索引当前返回 nil（统一由 T3.5 决策）
+                            if *i < 0 {
                                 Value::Nil
                             } else {
-                                Value::string(&s[*i as usize..*i as usize + 1])
+                                s.chars()
+                                    .nth(*i as usize)
+                                    .map(|c| Value::string(c.to_string()))
+                                    .unwrap_or(Value::Nil)
                             }
                         }
                         _ => Value::Nil,
@@ -813,6 +854,8 @@ impl Vm {
                         }
                         Value::String(s) => {
                             if field == "len" {
+                                Value::Int(s.chars().count() as i64)
+                            } else if field == "len_bytes" {
                                 Value::Int(s.len() as i64)
                             } else if field == "chars" {
                                 let chars: Vec<Value> =

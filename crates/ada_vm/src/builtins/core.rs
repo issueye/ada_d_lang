@@ -249,6 +249,9 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 args.to_vec()
             };
 
+            if items.is_empty() {
+                return Ok(Value::Nil);
+            }
             let mut min_val = items[0].clone();
             for it in items.iter().skip(1) {
                 if let (Some(a), Some(b)) = (it.as_float(), min_val.as_float()) {
@@ -277,6 +280,9 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 args.to_vec()
             };
 
+            if items.is_empty() {
+                return Ok(Value::Nil);
+            }
             let mut max_val = items[0].clone();
             for it in items.iter().skip(1) {
                 if let (Some(a), Some(b)) = (it.as_float(), max_val.as_float()) {
@@ -354,7 +360,7 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 return Ok(Value::Int(0));
             }
             match &args[0] {
-                Value::String(s) => Ok(Value::Int(s.len() as i64)),
+                Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
                 Value::Array(arr) => Ok(Value::Int(arr.read().unwrap().len() as i64)),
                 Value::Map(m) => Ok(Value::Int(m.read().unwrap().len() as i64)),
                 _ => Ok(Value::Int(0)),
