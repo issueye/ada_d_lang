@@ -11,6 +11,8 @@ ada_bytecode = { path = "../ada_bytecode" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
+hmac = "0.12"
 
 [dev-dependencies]
 ada_parser = { path = "../ada_parser" }

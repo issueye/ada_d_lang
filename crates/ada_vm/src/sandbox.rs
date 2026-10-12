@@ -17,6 +17,8 @@
 //! 规模累计，墙钟按指令循环与调度等待处的时钟检查；目标是"无法在不被拒绝的前提下
 //! 耗尽宿主资源"，而不是精确的分配器计量。
 
+use std::path::PathBuf;
+
 /// profile 名称，便于诊断与文档对应。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileKind {
@@ -63,6 +65,11 @@ pub struct Sandbox {
     pub max_tasks: Option<usize>,
     /// 指令燃料预算（`None` = 不限制）
     pub fuel: Option<u64>,
+    /// `fs` 模块允许访问的根目录（`None` = **不暴露 `fs` 模块**）。
+    ///
+    /// 这是 T7.5 的核心安全开关：脚本里的所有路径都被解析并限制在该目录之下，
+    /// 既不能用 `..`、也不能用绝对路径或符号链接逃逸（见 `builtins/fs.rs`）。
+    pub fs_root: Option<PathBuf>,
 }
 
 impl Default for Sandbox {
@@ -85,6 +92,7 @@ impl Sandbox {
             max_wall_clock_ms: Some(5_000),
             max_tasks: Some(128),
             fuel: None,
+            fs_root: None,
         }
     }
 
@@ -101,6 +109,7 @@ impl Sandbox {
             max_wall_clock_ms: None,
             max_tasks: Some(512),
             fuel: None,
+            fs_root: None,
         }
     }
 
@@ -117,6 +126,7 @@ impl Sandbox {
             max_wall_clock_ms: None,
             max_tasks: None,
             fuel: None,
+            fs_root: None,
         }
     }
 
@@ -184,6 +194,24 @@ impl Sandbox {
         self
     }
 
+    /// 暴露 `fs` 模块，并把脚本可见的文件系统限制在 `root` 之下（T7.5）。
+    ///
+    /// `root` 应当是**已存在**的目录；否则模块会注册但每次调用都返回错误
+    /// （可见的失败，而不是静默放行或 panic）。所有路径都会被规范化并验证仍在
+    /// 根目录内：`..`、绝对路径与符号链接都无法逃逸。
+    pub fn with_fs_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.kind = ProfileKind::Custom;
+        self.fs_root = Some(root.into());
+        self
+    }
+
+    /// 关闭 `fs` 模块（默认行为）。
+    pub fn without_fs(mut self) -> Self {
+        self.kind = ProfileKind::Custom;
+        self.fs_root = None;
+        self
+    }
+
     // ---------------------------------------------------------- 查询
 
     /// 某个环境变量键是否被允许读取（未配置白名单时全部拒绝）。
@@ -198,6 +226,7 @@ impl Sandbox {
             "env" => self.allow_env,
             "sys" => self.allow_sys,
             "sleep_ms" => self.allow_sleep,
+            "fs" => self.fs_root.is_some(),
             _ => true,
         }
     }

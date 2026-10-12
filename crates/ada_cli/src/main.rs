@@ -29,6 +29,10 @@ struct Cli {
     /// Use the strict sandbox (no time/env/sys/sleep_ms; memory & wall-clock limits)
     #[arg(long = "strict", global = true)]
     strict: bool,
+
+    /// Expose the `fs` module, restricted to this directory (T7.5)
+    #[arg(long = "fs-root", global = true, value_name = "DIR")]
+    fs_root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -65,6 +69,11 @@ fn main() {
         // CLI 是本地受信工具：默认 standard（time/sys/env 白名单/sleep 可用），
         // 但对宿主环境变量仍然只放行显式白名单。
         Sandbox::standard()
+    };
+    // T7.5：只有显式给出 `--fs-root` 才暴露 fs 模块，且限制在该目录内
+    let sandbox = match &cli.fs_root {
+        Some(root) => sandbox.with_fs_root(root),
+        None => sandbox,
     };
 
     // T0.6：统一错误格式 `[file:]line:col: error: <消息>`（有位置时）或 `<file>: error: <消息>`。

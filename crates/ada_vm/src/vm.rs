@@ -365,7 +365,7 @@ impl Vm {
         self.denied_globals.clear();
         self.budget.set_limit(self.sandbox.max_memory_bytes);
         crate::builtins::register_all(&mut self.globals, &self.sandbox);
-        for name in ["time", "env", "sys", "sleep_ms"] {
+        for name in ["time", "env", "sys", "sleep_ms", "fs"] {
             if !self.sandbox.allows_global(name) {
                 self.denied_globals.push(name.to_string());
             }

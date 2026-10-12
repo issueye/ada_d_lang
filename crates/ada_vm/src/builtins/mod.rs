@@ -1,4 +1,6 @@
 pub mod core;
+pub mod crypto;
+pub mod fs;
 pub mod json;
 pub mod math;
 pub mod sys;
@@ -22,6 +24,7 @@ pub fn register_all(globals: &mut HashMap<String, Value>, sandbox: &Sandbox) {
     // 3. Standard native modules（纯计算模块始终可用）
     globals.insert("json".to_string(), json::create_json_module(sandbox));
     globals.insert("math".to_string(), math::create_math_module());
+    globals.insert("crypto".to_string(), crypto::create_crypto_module());
 
     // 4. 宿主能力模块：按 profile 逐项放行
     if sandbox.allow_time {
@@ -34,6 +37,13 @@ pub fn register_all(globals: &mut HashMap<String, Value>, sandbox: &Sandbox) {
         globals.insert(
             "env".to_string(),
             sys::create_env_module(&sandbox.env_allowlist),
+        );
+    }
+    // T7.5：`fs` 只在宿主显式给出受限根目录时注册
+    if let Some(root) = &sandbox.fs_root {
+        globals.insert(
+            "fs".to_string(),
+            fs::create_fs_module(root.clone(), sandbox.max_memory_bytes),
         );
     }
 }
