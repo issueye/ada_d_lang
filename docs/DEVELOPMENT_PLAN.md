@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **180**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2，另含各 crate 单元测试 34） |
+| 测试总数 | 34 | **201**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 7，另含各 crate 单元测试 36） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -275,15 +275,20 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M7 · 生态与工具链 📋（长期）
+### M7 · 生态与工具链 🚧（T7.1 ✅ / T7.3 ✅ / T7.4 ✅ / T7.2 📋 延后 / T7.5 📋 延后）
 
-| ID | 任务 | 优先级 | 验收 |
-| :--- | :--- | :--- | :--- |
-| T7.1 | VSCode 语法高亮（TextMate grammar） | P3 | demo 脚本在 VSCode 中正确着色 |
-| T7.2 | LSP 最小实现：诊断（语法/运行时错误行列） | P3 | 编辑器内实时报错 |
-| T7.3 | 文档站：mdBook 从 `docs/` 单源构建 | P2 | `mdbook build` 成功且无死链 |
-| T7.4 | AI Prompt 模板与语法规格单页（供 LLM 生成代码） | P2 | 单页规格 + 3 个可运行示例 |
-| T7.5 | 可选扩展模块：`fs` / `http` / `crypto`（受 `SandboxProfile` 管控） | P3 | 模块遵循 T5.1 权限模型 |
+| ID | 任务 | 优先级 | 涉及文件 | 验收 / 完成证据 |
+| :--- | :--- | :--- | :--- | :--- |
+| ✅ T7.1 | VSCode 语法高亮（TextMate grammar） | P3 | `editors/vscode/`（新：`package.json`、`syntaxes/ada.tmLanguage.json`、`language-configuration.json`、`README.md`） | 完成证据：关键字/字符串插值/注释/数字/运算符/标点全覆盖；`crates/ada_cli/tests/editor_grammar.rs` **集合比对**语法表与 `ada_lexer::KEYWORDS`/`OPERATORS`（多一个少一个都失败），并校验清单路径与 `$self` 复用插值等结构 |
+| 📋 T7.2 | LSP 最小实现：诊断（语法/运行时错误行列） | P3 | `crates/ada_lsp/`（新） | **本轮延后**：需要 JSON-RPC/stdio 框架与编辑器侧联调，工作量大于一轮；前置条件已就绪——T0.6 已把诊断格式固定为单行 `file:line:col: error: <消息>`，`ParseError::position()`/`LexError::position()` 已是公开 API；剩余阻碍是编译/运行时错误尚无 `Span`（T1.8） |
+| ✅ T7.3 | 文档站：mdBook 从 `docs/` 单源构建 | P2 | `docs/book.toml`、`docs/SUMMARY.md`、`crates/ada_cli/tests/docs_site.rs`、CI | 完成证据：`mdbook build docs` 真实构建成功（产物在 `target/mdbook`，不污染源目录）；门禁保证"每个 `docs/*.md` 必须登记在 SUMMARY"且"SUMMARY 每项必须存在"，并校验每个条目都产出了对应 HTML；CI 新增 `docs-site` job（安装 mdbook 0.4.40 后强制构建） |
+| ✅ T7.4 | AI Prompt 模板与语法规格单页（供 LLM 生成代码） | P2 | `docs/AI_GUIDE.md`、`examples/ai/*.ada` + `*.expected.txt`、`crates/ada_cli/tests/ai_guide.rs` | 完成证据：单页规格含 14 个 `ada run` 代码块 + 期望输出/错误块，全部由**真实 CLI**执行比对；3 个完整示例（数据管道/并发/校验）与 golden 输出逐行比对；反直觉规则与坑位清单由 `guide_covers_the_documented_pitfalls` 固定 |
+| 📋 T7.5 | 可选扩展模块：`fs` / `http` / `crypto`（受 `SandboxProfile` 管控） | P3 | `crates/ada_vm/src/builtins/` | **本轮延后**：每个模块都是新的能力面（路径逃逸防护、网络超时、哈希依赖），需要与 M5 权限模型一并设计并配套敌意输入测试；沙箱侧的开关（`allows_global`/`denied_globals`）与 `env` 白名单已就绪，可作为实现模板 |
+
+**M7 附加修复（由新门禁暴露，已落地）**：
+- **D4 一致性问题**：`match` 分支体此前无条件把 `{` 当块，导致 `=> { k: v }` 无法解析，与决策 D4（`{}` 是 map）矛盾。现在分支体与表达式共用同一消歧函数 `parse_brace_expr`（回归测试见 `semantics.rs::match_arm_bodies_follow_the_same_brace_rule`，规范见 SPEC_LANGUAGE §5.6）。
+- **T0.6 CLI 错误格式**：由 `Error: {Debug}` 改为单行 `[file:]line:col: error: <消息>`；新增 `ParseError::position()`/`LexError::position()` 公开 API 与 `cli_errors.rs` 契约测试。
+- **文档门禁增强**：原先只能校验 Markdown 目标，链接到非 md 文件会误报"file missing"；现在对所有相对链接做存在性检查、只对 Markdown 目标做锚点检查。
 
 ---
 
@@ -313,7 +318,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 180 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2）。
+**当前状态**：`cargo test --workspace` → 201 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 7）。
 
 ---
 
@@ -411,7 +416,7 @@ docs/
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
 | M6 性能与 JIT | 3–6 周 | 🚧 | ☑（T6.1/T6.3/T6.5 完成；T6.2 达成 13%/30%；T6.4 延后） |
-| M7 生态工具链 | 长期 | 📋 | ☐ |
+| M7 生态工具链 | 长期 | 🚧 | ☑（T7.1/T7.3/T7.4 完成；T7.2/T7.5 延后并记录理由） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。
 

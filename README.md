@@ -12,11 +12,22 @@
 所有规范文档遵循「一个主题只有一个权威文档」原则，文档索引与权威来源矩阵见 **[docs/README.md](docs/README.md)**。
 
 * 📘 [**WHITEPAPER.md**](docs/WHITEPAPER.md) —— 愿景、定位、Token 密度论据、与既有方案的差异化。
+* 🤖 [**AI_GUIDE.md**](docs/AI_GUIDE.md) —— **给模型（或人）的单页规格**：语法速查、反直觉规则、常见错误对照、3 个可运行示例；页内每个示例都由 CLI 真实执行并比对输出。
 * 📗 [**SPEC_LANGUAGE.md**](docs/SPEC_LANGUAGE.md) —— 词法、语法、运算符优先级、求值与相等语义、作用域。
-* 📙 [**SPEC_RUNTIME.md**](docs/SPEC_RUNTIME.md) —— 字节码指令集、编译器策略、VM 执行模型、值模型、数值语义、错误模型、宿主嵌入 API、沙箱与权限。
+* 📙 [**SPEC_RUNTIME.md**](docs/SPEC_RUNTIME.md) —— 字节码指令集、编译器策略、VM 执行模型、值模型、数值语义、错误模型与 CLI 错误格式、宿主嵌入 API、沙箱与权限、性能基线与优化。
 * 📕 [**SPEC_STDLIB.md**](docs/SPEC_STDLIB.md) —— 全局内置函数、`json`/`math`/`time`/`sys`/`env` 模块、原型方法、统一迭代器协议与适配器。
 * 📔 [**SPEC_ASYNC.md**](docs/SPEC_ASYNC.md) —— 异步语法、并发原语、调度与挂起模型、任务生命周期契约。
 * 🗺️ [**DEVELOPMENT_PLAN.md**](docs/DEVELOPMENT_PLAN.md) —— **唯一的路线图**：基线快照、工作流、里程碑 M0–M7、任务与验收标准、质量门禁、风险与待决决策。
+
+文档站（mdBook，与上面同一批 Markdown 单一源）：`mdbook serve docs`，目录见 [docs/SUMMARY.md](docs/SUMMARY.md)。
+
+### 配套工具
+
+| 目录 | 内容 |
+| :--- | :--- |
+| [editors/vscode](editors/vscode/README.md) | VSCode 语法高亮扩展（关键字/插值/注释/运算符，含与词法表一致的防漂移门禁） |
+| [benches](benches) | criterion 墙钟基准 + 确定性指令数回归门禁（`benches/programs/*.ada`） |
+| [examples/ai](examples/ai) | AI 场景示例（数据管道、并发、校验），输出由 golden 测试比对 |
 
 ---
 

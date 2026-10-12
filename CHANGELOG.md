@@ -7,6 +7,18 @@
 
 ### Added
 
+- **AI 单页规格（M7 / T7.4）**：`docs/AI_GUIDE.md`——给模型（或人）的语法/语义速查，含 14 个
+  ```` ```ada run ```` 代码块（由真实 CLI 执行比对输出）、反直觉规则表、错误信息对照表与提示模板；
+  `examples/ai/{transform,async,validate}.ada` 三个完整示例 + golden 输出，
+  由 `crates/ada_cli/tests/ai_guide.rs` 守门。
+- **文档站（M7 / T7.3）**：`docs/book.toml` + `docs/SUMMARY.md`，`mdbook build docs` 可真实构建
+  （产物在 `target/mdbook`）；`crates/ada_cli/tests/docs_site.rs` 校验"每个 `docs/*.md` 必须登记在
+  SUMMARY"并执行一次构建；CI 新增 `docs-site` job。
+- **VSCode 语法高亮（M7 / T7.1）**：`editors/vscode/`（TextMate 语法 + 语言配置 + 扩展清单）；
+  `crates/ada_cli/tests/editor_grammar.rs` 把语法里的关键字/运算符与 `ada_lexer::KEYWORDS`/`OPERATORS`
+  做集合比对，杜绝漂移。
+- `ada_lexer::KEYWORDS` / `ada_lexer::OPERATORS`：编辑器与 AI 规格共用的权威记号表（由词法测试保证）。
+- `ParseError::position()` / `LexError::position()`：错误位置公开 API（T0.6/T7.2 前置）。
 - **基准与性能门禁（M6 / T6.1 / T6.5）**：`benches/`（独立包，criterion）覆盖 5 组基准 + 冷启动 + 仅编译，
   程序源 `benches/programs/*.ada`；`crates/ada_vm/tests/perf_budget.rs` 以**指令数**做确定性门禁
   （超基线 5% 失败，并校验基准程序的计算结果），基线存于 `benches/budgets.txt`。
@@ -83,11 +95,22 @@
   直接使用 `Vm::new()` 的场合不受影响（仍是全量内置）。
 - `env.get`/`env.has` 只对白名单键读取宿主环境；白名单为空时读取任何键都得到 `nil`/`false`。
 - CLI 默认使用 `standard` 档（本地工具定位），`--strict` 可切换到最小权限。
+- **CLI 错误格式统一（T0.6）**：错误从 `Error: {Debug 形式}` 改为**单行**
+  `[file:]line:col: error: <消息>`（无 span 时退化为 `file: error: <消息>`），消息用 `Display` 人话；
+  语法错误保留 `expected` 细节。`crates/ada_cli/tests/cli_errors.rs` 固定该契约。
 - **VM 性能优化（M6 / T6.2）**：闭包调用的捕获表改为 `Arc` 共享（不再每次克隆 `Vec`）、
   指令循环头部合并（每条指令只借出帧一次）、挂起检查免去每指令 32 字节写回、
   墙钟/指令计数计量合并为单布尔判断（修掉 M5 引入的每指令开销）。
   实测（criterion，释放构建）：`fib(24)` **−13.7%**、20 万次数值循环 **−12.1%**、
   迭代器管道 **−10.7%**、冷启动 **−16.6%**；未达计划 ≥30% 的目标，剩余路径见 SPEC_RUNTIME §11.3/§11.7。
+### Fixed
+
+- **`match` 分支体的括号判定与决策 D4 不一致**：分支体此前无条件把 `{` 当块，导致
+  `_ => { ok: false }` 这类 map 字面量体无法解析（报 `expected expression`）。现在分支体与表达式
+  共用同一消歧函数（`{ k: v }` 是 map、`{ let a = 1; a }` 是块），回归测试见
+  `ada_vm/tests/semantics.rs::match_arm_bodies_follow_the_same_brace_rule`，规范见 SPEC_LANGUAGE §5.6。
+- 文档门禁此前只能校验 Markdown 目标，链接到示例脚本等非 md 文件会误报"file missing"；
+  现在对所有相对链接做存在性检查、只对 Markdown 目标做锚点检查。
 - 字符串拼接的内存计费由"每次记整串长度"改为**按增量**计费（`s += x` 不再二次方消耗预算）；
   安全测试仍能拒绝真正的字符串放大攻击。
 
