@@ -7,20 +7,22 @@
 
 ### Added
 
+- **闭包 upvalue 捕获（T2.2）**：闭包可以读写外层局部变量，语义为**引用共享**。
+  - 新增指令 `MakeCell` / `CellGet` / `CellSet` / `UpvalueGet` / `UpvalueSet` / `MakeClosure` 与 `FunctionProto.upvalues`（`UpvalueDesc`）。
+  - 编译器做"嵌套函数引用名"预扫描来决定装箱；捕获链逐层传递，中间层不直接引用也能把槽传下去。
+  - 循环变量被捕获时**每轮独立槽**（`for i in range(0,3) { grabs.push((() => i)) }` → `[0, 1, 2]`）。
+- **Golden 端到端测试（M2 退出标准）**：`examples/showcase.ada` + `examples/showcase.expected.txt`，由 `crates/ada_cli/tests/golden_showcase.rs` 逐行比对，覆盖 SPEC_LANGUAGE §5–§8 / SPEC_STDLIB §2–§6 / SPEC_ASYNC §2 共 13 个规范小节；`examples/demo.ada` 也扩展了闭包 + 适配器小节。
 - **迭代器适配器（T2.1）**：`map` / `filter` / `take` / `skip` / `collect` / `count` / `find` / `any` / `all` / `enumerate` / `rev` / `join` / `sum`，**方法链与全局函数双入口**（`xs.map(f)` 与 `xs |> map(f)`），可用于数组、字符串、字典、`range` 与任意迭代器。
   - 由 VM 实现（`Value::Intrinsic` + `Vm::invoke_adapter`），因为 `NativeFn` 回调无法回调脚本闭包。
   - 当前为**即时求值**（决策 D3 = A），适配器结果一律是 `Array`。
 - **显式迭代协议（T2.3）**：`.iter()` 与 `iterator.next()`（耗尽返回 `nil`）；`string.chars_with_idx`；`is_iterator`。
 - **REPL / 多轮求值持久化（T2.4）**：模块顶层的 `let`/`mut` 同时写入全局表，同一 `Engine` 的后续 `eval` 可见；函数体内的局部变量不会外泄。
 - **Fuel 生命周期（T2.6）**：每次求值自动重新装填配置预算；新增 `remaining_fuel()` / `reset_fuel()`（`Vm` 与 `Engine`），`get_fuel()` 语义明确为"配置预算"。
-- 测试：`crates/ada_vm/tests/adapters.rs`（16）、`crates/ada_engine/tests/persistent_eval.rs`（7），并扩充文档示例测试。
+- 测试：`crates/ada_vm/tests/adapters.rs`（16）、`crates/ada_vm/tests/closures.rs`（15）、`crates/ada_engine/tests/persistent_eval.rs`（7）、`crates/ada_cli/tests/golden_showcase.rs`（3），并扩充文档示例测试。
+- **文档门禁（T0.4/T0.5）**：`crates/ada_cli/tests/doc_links.rs` 校验 Markdown 链接/锚点并按 GitHub slug 规则解析，同时禁止规范文档中出现路线图章节；`crates/ada_engine/tests/doc_examples.rs` 固化 README/SPEC 中标注可运行的示例。
 - `ada_engine` 公共 re-export：`Value`、`Closure`、`NativeCallback`、`Vm`、`VmError`、`ParseError`、`CompileError`，宿主不再需要显式依赖 `ada_vm`（T0.7）。
 - `LICENSE-MIT` 与 `LICENSE-APACHE`，与 `Cargo.toml` 声明的 `MIT OR Apache-2.0` 对齐（T0.2）。
 - CI 质量门禁 `.github/workflows/ci.yml`：`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test --workspace`（T0.4）。
-- 集成测试与文档门禁（T0.5）：
-  - `crates/ada_vm/tests/robustness.rs`：panic 回归用例（T1.5）
-  - `crates/ada_engine/tests/doc_examples.rs`：README / SPEC 示例可运行性（防文档漂移）
-  - `crates/ada_cli/tests/doc_links.rs`：Markdown 链接与锚点校验、规范文档禁用路线图章节
 - 字符串 `.len_bytes`：返回 UTF-8 字节数（T2.5）。
 
 ### Fixed

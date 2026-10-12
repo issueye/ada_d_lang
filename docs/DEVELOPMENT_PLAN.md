@@ -53,7 +53,7 @@
 | 设计文档 | 5 份，约 970 行（**整合前基线**；T0.3 完成后为 `docs/` 下 6 份规范/索引 + 本文档，见 §11） |
 | 示例脚本 | 1 个（`examples/demo.ada`，98 行，端到端可运行） |
 | 编译告警 | `cargo build --workspace` → 0 warning / 0 error |
-| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0）；**M2 进行中为 90 passed**（见 §2.4） |
+| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0）；**M2 完成后为 108 passed**（见 §2.4） |
 | 版本控制 | 基线时**无任何 commit**（T0.1 已修复，见 §2.4） |
 | 许可证 | 基线时声明 `MIT OR Apache-2.0` 但无 `LICENSE` 文件（T0.2 已补齐 `LICENSE-MIT` + `LICENSE-APACHE`） |
 | CI / fmt / clippy / bench | 基线时均无；T0.4 已建立 CI（fmt / clippy / test / 文档门禁）；**bench 仍缺**（T6.1） |
@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **90**（`robustness.rs` 17 + `adapters.rs` 16 + `doc_examples.rs` 14 + `persistent_eval.rs` 7 + `doc_links.rs` 2） |
+| 测试总数 | 34 | **108**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `doc_examples.rs` 14 + `persistent_eval.rs` 7 + `golden_showcase.rs` 3 + `doc_links.rs` 2） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -114,6 +114,8 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 迭代器能力 | `filter`/`map`/`take` 全族缺失，`iterator` 无任何方法 | ✅ 13 个适配器（方法 + 全局双入口）、`.iter()`/`.next()`、`is_iterator`（T2.1/T2.3） |
 | REPL / 多轮求值 | 顶层 `let` 跨轮丢失 | ✅ 顶层绑定写全局表，跨轮可见；函数体内局部不外泄（T2.4/T2.7） |
 | Fuel 生命周期 | 一次 `OutOfFuel` 后 `Engine` 永久失效 | ✅ 每次求值重新装填 + `remaining_fuel`/`reset_fuel`（T2.6） |
+| 闭包捕获 | 无 upvalue：捕获外层变量报 `UndefinedGlobal` | ✅ 引用共享（可写捕获）、多级传递、逃逸闭包、每轮循环变量独立槽（T2.2） |
+| 端到端 golden | 无 | ✅ `examples/showcase.ada` + `showcase.expected.txt` + `golden_showcase.rs` 逐行比对（13 个规范小节） |
 
 ---
 
@@ -177,22 +179,22 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M2 · 语言核心补齐 P1 🚧（预计 1–2 周）
+### M2 · 语言核心补齐 P1 ✅（预计 1–2 周）
 
 **目标**：白皮书与规范中所有"已写进语法/标准库"的示例都能真实运行。
 
 | ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | ✅ T2.1 | 迭代器适配器：`map`/`filter`/`take`/`skip`/`enumerate`/`collect`/`count`/`find`/`any`/`all`/`join`/`sum`，同时提供**方法链**与**全局函数**（供 `|>` 使用） | W3 | P1 | `ada_vm/src/{vm,value}.rs`, `builtins/{core,mod}.rs` | 完成证据：`adapters.rs::plan_acceptance_pipeline_returns_165`（计划验收用例 == `165`）+ 15 个适配器用例；双入口经 `Value::Intrinsic` 统一（方法形式绑定接收者） |
-| T2.2 | 闭包 upvalue 捕获：新增 `GetUpvalue`/`SetUpvalue` 与带 upvalue 描述的 `Closure` 指令；编译器维护 upvalue 表 | W2/W1 | P1 | `ada_bytecode/src/{instruction,compiler}.rs`, `ada_vm/src/vm.rs` | `fn outer(a) { let g = x => x + a; g(5) }` → `15`；多层嵌套捕获用例通过 |
+| ✅ T2.2 | 闭包 upvalue 捕获：新增 `MakeCell`/`CellGet`/`CellSet`/`UpvalueGet`/`UpvalueSet`/`MakeClosure` 指令与 `FunctionProto.upvalues`；编译器做装箱预扫描并传递式解析捕获 | W2/W1 | P1 | `ada_bytecode/src/{instruction,compiler}.rs`, `ada_vm/src/{vm,value}.rs` | 完成证据：`closures.rs` 15 个用例全绿（计划验收用例 `fn outer(a) { let g = x => x + a; g(5) }` → 15；可写捕获计数器、多级传递、逃逸闭包、每轮循环独立捕获、与适配器组合、Cell 不泄漏） |
 | ✅ T2.3 | 原型方法补齐：`string.chars_with_idx/iter/next`、array `iter/next`、map `iter/next`、`is_iterator` | W3 | P1 | `ada_vm/src/vm.rs`, `builtins/core.rs` | 完成证据：`adapters.rs::explicit_iter_and_next_protocol`、`chars_with_idx_provides_index_char_pairs`；`.iter()` 返回可调用的零参方法 |
 | ✅ T2.4 | REPL 状态持久化：顶层 `let`/`mut` 落到持久 scope（或编译为 `SetGlobal`），跨行可见 | W2/W6 | P1 | `ada_bytecode/src/compiler.rs`, `ada_engine` | 完成证据：`persistent_eval.rs::top_level_bindings_persist_across_evaluations`（`let a = 41` → `a + 1` == 42）；新增 `is_module_scope` 保证函数体内局部不外泄 |
 | ✅ T2.5 | 长度语义统一：`.len` 与 `len()` 返回**字符数**；新增 `.len_bytes` 表达字节数；同步规范 | W3 | P1 | `ada_vm/src/vm.rs`, `builtins/core.rs`, `SPEC_STDLIB.md` | 完成证据：`robustness.rs::string_len_counts_characters_and_len_bytes_counts_bytes`（`len("Ada 语言") == 6`、`.len_bytes == 10`） |
 | ✅ T2.6 | `fuel` 生命周期：`execute()` 每次重新装填；新增 `reset_fuel` / `remaining_fuel` | W2/W5 | P1 | `ada_vm/src/vm.rs`, `ada_engine/src/lib.rs` | 完成证据：`persistent_eval.rs::fuel_is_reloaded_on_every_evaluation` + `remaining_fuel_is_observable_and_resettable` |
 | ✅ T2.7 | `Engine` 持久化求值测试（多轮 eval 共享状态） | W6 | P1 | `crates/ada_engine/tests/persistent_eval.rs` | 完成证据：7 个用例（变量 / 函数 / 模块与宿主函数 / 局部不外泄 / fuel × 3） |
 
-**退出标准**（部分达成）：`examples/demo.ada` 扩展为覆盖 SPEC_LANGUAGE §5–§8、SPEC_STDLIB §4–§6、SPEC_ASYNC §2 中全部脚本示例的 golden 脚本；golden 输出比对通过。
-**剩余**：T2.2（闭包 upvalue 捕获）+ golden demo 脚本。
+**退出标准**：✅ 达成 —— golden 脚本 `examples/showcase.ada`（覆盖 SPEC_LANGUAGE §5–§8、SPEC_STDLIB §2–§6、SPEC_ASYNC §2 共 13 个小节）+ 期望输出 `examples/showcase.expected.txt`，由 `crates/ada_cli/tests/golden_showcase.rs` 逐行比对；
+`examples/demo.ada` 也扩展了闭包 + 适配器小节。两个文件均已连续两次运行验证输出一致（确定性）。
 
 ---
 
@@ -291,14 +293,14 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | :--- | :--- | :--- | :--- |
 | 单元测试 | 各 crate `src/lib.rs` 内 | 词法/语法/编译/VM 指令 | 已有，持续补 |
 | 集成测试 | `crates/*/tests/` | 跨 crate 行为、脚本级语义、稳健性、安全性 | M1–M5 |
-| Golden 测试 | `examples/*.ada` + 期望输出 | 端到端行为与文档示例一致性（防文档漂移） | M2 起 |
+| Golden 测试 | `examples/showcase.ada` + `examples/showcase.expected.txt` | 端到端行为与规范示例一致性（防文档漂移） | ✅ M2 已启用（`golden_showcase.rs`） |
 | Fuzz | `fuzz/`（cargo-fuzz） | lexer/parser 在随机输入下不 panic、不 OOM | M3 起 |
 | 基准 | `benches/`（criterion） | 性能回归门禁 | M6 |
 | 文档测试 | `crates/ada_engine/tests/doc_examples.rs` | README / SPEC 中标注可运行的示例（防文档漂移，R1 缓解） | ✅ M1 已启用 |
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 90 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 文档示例 14 + 多轮求值 7 + 文档门禁 2）。
+**当前状态**：`cargo test --workspace` → 108 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 文档示例 14 + 多轮求值 7 + golden 3 + 文档门禁 2）。
 
 ---
 
@@ -352,6 +354,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | D5 | 整数溢出语义 | ~~A 报错~~；~~B 回绕~~ → **已决：A（报错）** | **决策（2026-10，M1 执行期）**：采用 `checked_*` + `VmError::TypeError`。理由：AI 沙箱场景下"静默回绕"会产生难排查的错误结果，而硬错误可被宿主捕获；若未来基准显示热路径成本显著，再评估回绕或 f64 提升 | ✅ 已决（T1.2 落地） |
 | D6 | 内存模型 | A 维持 `Arc<RwLock>`；B 引入 GC | B 是大重构 | M5 结束前评估 |
 | D7 | `match` 非穷尽 | A 运行时错误；B 编译期警告 | 影响语言严格度 | T3.2 前 |
+| D8 | 闭包捕获语义 | ~~A 值拷贝~~；~~B 引用共享（Cell）~~ → **已决：B（引用共享）** | **决策（2026-10，M2 执行期）**：被捕获变量装箱为共享槽，闭包内写入对外层可见；循环变量每轮独立槽（类 JS `let`）；代价是被捕获变量的读写多一层 Cell 间接（仅对被捕获的变量生效，未捕获的局部变量仍是纯寄存器） | ✅ 已决（T2.2 落地） |
 
 > 决策流程：在本文档补记结论 → 更新对应 `SPEC_*.md` → 再动手实现。
 
@@ -390,7 +393,7 @@ docs/
 | :--- | :--- | :--- | :--- |
 | M0 治理基线 | 1–2 天 | ✅ | ☑（T0.6 为 P1 遗留） |
 | M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 为 P1 遗留） |
-| M2 语言核心补齐 | 1–2 周 | 🚧 | ☐（剩 T2.2 + golden） |
+| M2 语言核心补齐 | 1–2 周 | ✅ | ☑ |
 | M3 语义收紧 | 1 周 | 📋 | ☐ |
 | M4 异步并发 | 2–3 周 | 📋 | ☐ |
 | M5 沙箱安全 | 1–2 周 | 📋 | ☐ |

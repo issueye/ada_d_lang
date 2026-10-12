@@ -102,11 +102,14 @@ enum Value {
 | 全局 | `GetGlobal{dst,name_idx}` `SetGlobal{name_idx,src}` |
 | 容器 | `NewArray{dst,start,count}` `NewMap{dst}` `MapSet{map,key,val}` `GetIndex{dst,target,index}` `SetIndex{target,index,val}` `GetField{dst,target,field_idx,optional}` `SetField{target,field_idx,val}` |
 | 字符串 | `StringConcat{dst,start,count}` |
-| 闭包 | `Closure{dst,proto_idx}` |
+| 闭包 | `Closure{dst,proto_idx}`（无捕获）、`MakeClosure{dst,proto_idx,upvalue_start,upvalue_count}`（带捕获） |
+| 捕获槽（T2.2） | `MakeCell{dst,src}` `CellGet{dst,cell}` `CellSet{cell,src}` `UpvalueGet{dst,idx}` `UpvalueSet{idx,src}` |
 | 异步 | `Await{dst,future}` `Spawn{dst,expr}` |
 | 迭代 | `IterInit{dst,src}` `IterNext{dst,iter,offset}` |
 
-**待扩展**（任务 T2.2）：`GetUpvalue` / `SetUpvalue`（闭包捕获）、带 upvalue 描述的 `Closure` 变体。
+`FunctionProto.upvalues: Vec<UpvalueDesc>` 描述本函数每个捕获的来源
+（`ParentLocal(reg)` = 父帧局部槽；`ParentUpvalue(idx)` = 父帧自己的第 idx 个捕获）。
+
 **待改造**（任务 T4.1）：`Spawn` 需携带 `proto_idx + arg_start + arg_count`。
 
 ---
@@ -131,15 +134,22 @@ enum Value {
 ```ada
 fn f(x) = ...        // 编译为 child_proto + Closure{dst,proto_idx}
                      // 顶层函数额外发一条 SetGlobal（因此脚本内函数是全局的）
-fn outer(a) { let g = x => x + a }   // ⚠️ a 无法被 g 捕获（无 upvalue，T2.2）
+fn outer(a) { let g = x => x + a; g(5) }   // a 被装箱为 Cell，g 通过捕获共享读写
 ```
 
 | 规则 | 状态 |
 | :--- | :--- |
 | 顶层 `fn` 同时写全局 | ✅ |
 | 块内 `fn` 仅注册为局部变量 | ✅ |
-| 闭包捕获外层局部变量 | ⚠️ 未实现（T2.2） |
+| 闭包捕获外层局部变量 | ✅（T2.2）：捕获槽为 `Value::Cell`，内外部共享读写 |
+| 多级捕获传递 | ✅：子函数报告捕获**名字**，父层解析来源并可继续向上物化（支持"中间层不直接引用"） |
 | 调用参数数量精确匹配（无默认值/可变参数） | ✅（不匹配报 `ArityMismatch`） |
+
+**装箱判定（编译器侧）**：编译期为每个函数体（含模块单元）预扫描"嵌套函数中出现过的标识符"，
+命中同名局部变量即装箱；这是上近似，宁可多装箱也不会漏（漏装箱会让捕获退化为值拷贝）。
+
+**每轮循环变量**：`for` 的变量被捕获时，编译器在循环体内每次迭代重新发一条 `MakeCell`，
+因此每个迭代闭包持有独立槽。
 
 ### 4.4 控制流编译 ✅
 
@@ -152,7 +162,7 @@ fn outer(a) { let g = x => x + a }   // ⚠️ a 无法被 g 捕获（无 upvalu
 
 | ID | 缺口 | 任务 |
 | :--- | :--- | :--- |
-| G-R1 | 无 upvalue 表 | T2.2 |
+| G-R1 | 无 upvalue 表 | ✅ 已修复（T2.2）：`FunctionProto.upvalues` + `MakeCell`/`CellGet`/`CellSet`/`UpvalueGet`/`UpvalueSet`/`MakeClosure` | ✅ T2.2 |
 | G-R2 | 顶层 `let` 不写全局 → REPL 跨行不持久 | T2.4 |
 | G-R3 | `is_mut` 被丢弃，不可变性不校验 | T3.1 |
 | G-R4 | 插值片段独立重新解析，span 相对片段 | T3.4 |
@@ -178,6 +188,7 @@ struct Vm {
 | 行为 | 状态 | 说明 |
 | :--- | :--- | :--- |
 | 调用帧 | ✅ | 扁平寄存器窗口：`new_base = caller.base_reg + caller.register_count` |
+| 帧携带捕获 | ✅ | 每个 `CallFrame` 保存该闭包的捕获表（`captures: Vec<Value>`）；主帧为空，`UpvalueGet`/`UpvalueSet` 从中读取 |
 | 帧数上限 | ✅ | 512 帧，超出报 `StackOverflow`（`fib(600)` 触发，干净报错） |
 | 叶帧结束隐式返回 `nil` | ✅ | |
 | 全局变量跨 `execute()` 保留 | ✅ | 同一 `Vm`/`Engine` 可多轮求值 |

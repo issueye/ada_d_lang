@@ -282,7 +282,8 @@ assert_eq(result, 165)   // 1 + 9 + 25 + 49 + 81
 
 对应测试：`crates/ada_vm/tests/adapters.rs::plan_acceptance_pipeline_returns_165`。
 
-> 注：该示例只用到回调自身参数，因此**不依赖**闭包捕获（T2.2）。一旦回调需要引用外部变量（如 `let t = 3; xs |> filter(x => x > t)`），则必须先完成 T2.2。
+> 注：该示例只用到回调自身参数。**自 T2.2 起闭包也能捕获外层变量**，因此
+> `let t = 3; xs |> filter(x => x > t)` 这类写法同样可用（回调可以累加外层计数器）。
 
 ### 6.3 双入口实现方式 ✅
 
