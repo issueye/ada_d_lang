@@ -230,18 +230,23 @@ fn work(x, ms) {
 }
 let a = spawn work(21, 10)
 let b = spawn work(1, 5)
+println($"first: {await a}")
+println($"second: {b.await}")
 let all = [a, b].await_all()
 println($"{all}|{a.state}")
 ```
 
 ```output
+first: 42
+second: 2
 [42, 2]|done
 ```
 
 - `spawn f(...)` **不在生成点执行**任务体，任务在调度器首次运行它时才开始。
-- `await` / `.await` 等待；`await_all`（按实参顺序）/ `await_any`（最先结算）/ `timeout(task, ms)`（超时取消并返回 `nil`）/ `task.cancel()` / `task.state`。
+- 等待单个任务：前缀 `await t` 或后缀 `t.await`（**不要写 `t.await()`**——那会先等待、再调用结果）。
+- `await_all`（按实参顺序）/ `await_any`（最先结算）/ `timeout(task, ms)`（超时取消并返回 `nil`）/ `task.cancel()` / `task.state`。
 - 并发只对**挂起点**（`sleep_ms`、`await`）有效：两个各 `sleep_ms(200)` 的任务总耗时 ≈200ms。
-- 任务里的错误在 `await` 处抛出为 `TaskFailed{label, source}`；主任务结束即脚本结束（未完成任务被丢弃）。
+- 任务里的错误在 `await` 处抛出为 `TaskFailed{label, source}`，并**指向任务内部出错的那一行**；主任务结束即脚本结束（未完成任务被丢弃）。
 
 ---
 
@@ -254,6 +259,7 @@ println($"{all}|{a.state}")
 | 3 | `{ x }` 是 **map**，不是块 | `type_of({ x }) == "map"` |
 | 4 | `match` 分支体同规则，且**必须穷尽** | `{ k: v }` 是 map；无 `_` 且未命中 → 运行时报错 |
 | 5 | `spawn f(1).await` = `spawn (f(1).await)` | 想"先生成再等待"请分两行写 |
+| 5b | 等待任务写 `await t` / `t.await`，**不是** `t.await()` | `.await()` 先等待、再调用结果（结果不是函数就报 "Cannot call non-callable value"） |
 | 6 | 有序比较**只接受数值** | `5 < "a"` 报错（不再静默 `false`）；`NaN` 比较恒 `false` |
 | 7 | 浮点保留小数位，整数不保留 | `to_str(1.0) == "1.0"`，`to_str(1) == "1"` |
 | 8 | 整数溢出/除零/取模零/移位越界都**报错** | `i64::MAX + 1` → `TypeError`；浮点除零按 IEEE 得 `inf` |
@@ -263,6 +269,9 @@ println($"{all}|{a.state}")
 ---
 
 ## 12. 常见错误信息 → 修法
+
+> 所有错误都会给出 `file:line:col`（位置指向真正出问题的那一行；任务内失败指向任务内部）。
+> 下面括号里是消息片段。
 
 | 错误（片段） | 含义 | 修法 |
 | :--- | :--- | :--- |

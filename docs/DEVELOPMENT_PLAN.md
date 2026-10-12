@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **201**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 7，另含各 crate 单元测试 36） |
+| 测试总数 | 34 | **221**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 22 + `async.rs` 26 + `security.rs` 21 + `diagnostics.rs` 12 + `host_panic.rs` 4 + `doc_examples.rs` 16 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `ai_guide.rs` 4 + `docs_site.rs` 3 + `editor_grammar.rs` 4 + `cli_errors.rs` 9，另含各 crate 单元测试 36） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -174,11 +174,11 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | ✅ T1.4 | 字符串索引按字符（`chars().nth`）定位，消除 byte-boundary panic | W2 | P0 | `ada_vm/src/vm.rs` | 完成证据：`"语言"[0]` → `"语"`、`"Ada 语言"[4]` → `"语"`、越界 → `nil` |
 | ✅ T1.5 | panic 路径的回归测试（含多字节、极值、边界组合、ASI 续行陷阱） | W6 | P0 | `crates/ada_vm/tests/robustness.rs` | 完成证据：17 个用例全绿（要求 ≥8） |
 | ✅ T1.6 | 全 crate 审计其余 panic 源（`unwrap`/`expect`/索引越界/`as` 截断），逐条处理或标注 | W2 | P0 | 全 crate | 完成证据：发现并修复 `min([])`/`max([])` 空数组越界 panic（2 个用例）；其余 `unwrap` 均为 `RwLock` 中毒语义或编译器不变量（`constants`/`names` 索引由编译器生成，见 SPEC_RUNTIME §4） |
-| T1.7 | 宿主兜底：`Engine::eval*` 边界 `catch_unwind`，把意外 panic 转为 `Error::Panic`（默认开启，可关闭） | W5 | P1 | `ada_engine/src/lib.rs` | 故意 panic 的 native fn 不杀死宿主进程 |
-| T1.8 | 错误可定位：`VmError` 附带当前指令的 `Span`，CLI 输出行号 | W2/W6 | P1 | `ada_vm`, `ada_bytecode`, `ada_cli` | 运行时错误输出 `file:line:col` |
+| ✅ T1.7 | 宿主兜底：`Engine::eval*` 边界 `catch_unwind`，把意外 panic 转为错误 | W5 | P1 | `ada_vm/src/vm.rs`（`Vm::execute` 边界） | 完成证据：**`VmError::HostPanic { message }`**；原生回调 / 适配器回调内 / 自定义模块函数 panic 三种场景都被兜住（`crates/ada_engine/tests/host_panic.rs` 4 个用例），且仍带失败指令位置；返回 `Err` 的普通回调不受影响、同一引擎可继续使用。实现读法：兜底放在 `Vm::execute` 而非 `Engine::eval*`，因此直接使用 `Vm` 的宿主同样受保护；不支持"可关闭"开关（panic 必然意味着宿主 bug，没有保留崩溃的正当理由） |
+| ✅ T1.8 | 错误可定位：错误附带 `Span`，CLI 输出行号 | W2/W6 | P1 | `ada_bytecode`, `ada_vm`, `ada_engine`, `ada_cli` | 完成证据：`CompileError` 四个变体带 `Span`（`span()` 访问器）；VM 用 `FunctionProto.spans` + 失败指令下标定位，在帧栈被清空前记录；任务失败用任务自己的位置。CLI 现已对**语法/编译/运行时/任务**四类错误全部输出 `file:line:col`。新增 `Engine::eval_diagnostic -> EvalFailure { error, position }` 与 `Position`（`eval_value` 兼容不变）。测试：`crates/ada_engine/tests/diagnostics.rs` 12 个 + `cli_errors.rs` 扩到 9 个 |
 
-**退出标准**：✅ 达成 —— 原 5 类 panic 探针全部返回干净错误（exit 1 而非 101）；`robustness.rs` 17 个用例（要求 ≥8）；`cargo test --workspace` 65 passed / 0 failed；fmt + clippy + 文档门禁全绿。
-（剩余 T1.7/T1.8 为 P1，归入 M5/M3 的收尾工作）
+**退出标准**：✅ 达成 —— 原 5 类 panic 探针全部返回干净错误（exit 1 而非 101）；`robustness.rs` 17 个用例（要求 ≥8）；fmt + clippy + 文档门禁全绿。
+（T1.7/T1.8 的 P1 遗留已在 M7 轮次补齐，见上方完成证据）
 
 ---
 
@@ -318,7 +318,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 201 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 7）。
+**当前状态**：`cargo test --workspace` → 221 passed / 0 failed（单元 36 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 22 + 异步 26 + 安全 21 + 诊断 12 + 宿主 panic 4 + 文档示例 16 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2 + AI 规格 4 + 文档站 3 + 编辑器语法 4 + CLI 错误格式 9）。
 
 ---
 
@@ -410,9 +410,9 @@ docs/
 | 里程碑 | 预计工时 | 状态 | 退出标准达成 |
 | :--- | :--- | :--- | :--- |
 | M0 治理基线 | 1–2 天 | ✅ | ☑（T0.6 为 P1 遗留） |
-| M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 为 P1 遗留） |
+| M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 已在后续轮次补齐） |
 | M2 语言核心补齐 | 1–2 周 | ✅ | ☑ |
-| M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位遗留） |
+| M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位已补齐） |
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
 | M6 性能与 JIT | 3–6 周 | 🚧 | ☑（T6.1/T6.3/T6.5 完成；T6.2 达成 13%/30%；T6.4 延后） |

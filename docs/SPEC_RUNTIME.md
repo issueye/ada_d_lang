@@ -320,20 +320,26 @@ struct Vm {
 | `LexError` | `UnexpectedChar` `UnterminatedString` `UnterminatedBlockComment` `InvalidNumber` `UnterminatedInterpExpr` | 词法阶段 |
 | `ParseError` | `UnexpectedToken` `UnexpectedEof` `InvalidAssignmentTarget` `Lex(..)` | 语法阶段 |
 | `CompileError` | `VariableNotFound` `TooManyRegisters` `InvalidAssignmentTarget` **`AssignToImmutable`** | 编译阶段（T3.1：向 `let` 绑定赋值） |
-| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` `NoMatch` `TaskFailed` `TaskCancelled` `TaskDeadlock` **`CapabilityDenied` `MemoryLimitExceeded` `WallClockLimitExceeded` `TaskLimitExceeded`** | 运行阶段（T3.2 非穷尽 `match`；M4 任务错误；M5 沙箱与资源限额） |
+| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` `NoMatch` `TaskFailed` `TaskCancelled` `TaskDeadlock` **`CapabilityDenied` `MemoryLimitExceeded` `WallClockLimitExceeded` `TaskLimitExceeded` `HostPanic`** | 运行阶段（T3.2 非穷尽 `match`；M4 任务错误；M5 沙箱与资源限额；T1.7 宿主 panic 兜底） |
 | `ada_engine::Error` | `Parse` `Compile` `Vm` `Conversion` **`ModuleConflict`** | 宿主门面统一封装 |
+| `EvalFailure` | `{ error: Error, position: Option<Position> }` | 求值失败 + 位置（T1.8，见 §8.2/§9.2） |
 
 | 规范要求 | 状态 |
 | :--- | :--- |
-| 所有错误携带源码位置（`file:line:col`） | ⚠️ 词法/语法错误已带 `line:col`（`LexError::position` / `ParseError::position`）；编译期与运行时错误尚无 `Span`（T1.8 待补） |
-| CLI 输出统一格式（T0.6） | ✅ 单行 `[file:]line:col: error: <消息>`；无 span 时退化为 `file: error: <消息>`（不再输出 Debug 形式）；`crates/ada_cli/tests/cli_errors.rs` 固定该契约 |
-| 库错误不得 panic | ✅ 脚本输入不再触发宿主 panic（M1 清零 + M5 敌意输入回归）；宿主侧 `catch_unwind` 兜底仍为 📋 T1.7 |
+| 所有错误携带源码位置（`line:col`） | ✅（T1.8）词法/语法用词法位置；编译错误用 `CompileError::span`；运行时错误用"失败指令"的 span；任务失败用**任务自己**的位置。仅少数调度器层面错误（死锁/墙钟/任务数上限）与 `TooManyRegisters` 无位置可归因 |
+| CLI 输出统一格式（T0.6 + T1.8） | ✅ 单行 `[file:]line:col: error: <消息>`；确实无位置时退化为 `file: error: <消息>`（不再输出 Debug 形式）；`crates/ada_cli/tests/cli_errors.rs` 固定该契约 |
+| 库错误不得 panic | ✅ 脚本输入不再触发宿主 panic（M1 清零 + M5 敌意输入回归）；宿主回调 panic 由 `catch_unwind` 兜底转为 `VmError::HostPanic`（T1.7） |
 
-### 8.1 CLI 错误格式 ✅（T0.6）
+> **T1.7 适用前提**：兜底依赖 Rust 的 `panic = "unwind"`（默认）。若宿主在 profile 里设了
+> `panic = "abort"`，`catch_unwind` 无法拦截，panic 仍会终止进程。
+> 另外，宿主代码在持有内部 `RwLock` 写锁时 panic 会**中毒**该锁，因此收到 `HostPanic` 后
+> 应丢弃并重建 `Engine`/`Vm`（规范如此建议，测试只断言"不崩溃 + 错误种类"）。
+
+### 8.1 CLI 错误格式 ✅（T0.6 / T1.8）
 
 ```
-file:line:col: error: <消息>      # 词法/语法错误：位置可用
-file: error: <消息>              # 编译/运行时错误：当前没有 span
+file:line:col: error: <消息>      # 位置已知（绝大多数错误）
+file: error: <消息>              # 位置无法归因（少数调度器层面错误）
 ```
 
 - 一律**单行**（编辑器/工具可直接切分），`file` 为脚本路径，`-e` 求值时是 `<eval>`。
@@ -341,6 +347,28 @@ file: error: <消息>              # 编译/运行时错误：当前没有 span
   `Cannot assign to immutable variable 'a' (declare it with `mut`)`、
   `No `match` arm matched the value (non-exhaustive match); add a `_` arm`、
   `Capability 'time' is not available in the 'strict' sandbox profile`。
+- 实际输出示例（每类错误都指向真正出问题的位置）：
+
+```
+script.ada:1:13: error: unexpected token <EOF>, expected expression   # 语法
+script.ada:2:1: error: Cannot assign to immutable variable 'a' …      # 编译
+script.ada:2:9: error: Type error: Division by zero                   # 运行时
+script.ada:2:5: error: Task 'boom' failed: Type error: Division by zero  # 任务内部
+```
+
+### 8.2 位置从哪来 ✅（T1.8）
+
+| 错误类别 | 位置来源 |
+| :--- | :--- |
+| 词法 / 语法 | `LexError::position()` / `ParseError::position()`（词法阶段记录） |
+| 编译 | `CompileError::span()`：编译器在报错点取当前表达式的 `Span`（除 `TooManyRegisters`） |
+| 运行时 | `FunctionProto.spans`（与 `instructions` 同步维护）+ 失败指令下标。循环在派发前已把 `ip` 自增，所以失败指令是 `ip - 1`；VM 在帧栈被清空前（`drive_current` 的错误分支）记录 |
+| 任务失败 | 任务**自己**的失败位置（`TaskInner.error_span`）：`await` 那一行不是真正的失败点，报错指向任务内部 |
+| 适配器回调内失败 | 归到调用该适配器的那一行（回调是 Rust 栈帧里的可重入调用，无法归属到闭包内部） |
+| 宿主 panic（T1.7） | 展开不会清空帧栈，因此仍能补记失败指令位置 |
+
+位置经 `Engine::eval_diagnostic` 以 `EvalFailure::position` 交付（见 §9.2）；
+`Error::position()` 只覆盖自带 span 的类别（词法/语法/编译），运行时位置需要 VM 状态。
 
 ---
 
@@ -350,19 +378,42 @@ file: error: <消息>              # 编译/运行时错误：当前没有 span
 
 | API | 状态 | 说明 |
 | :--- | :--- | :--- |
-| `Engine::new()` | ✅ | 创建 VM 并注册全部内置函数与模块 |
+| `Engine::new()` | ✅ | **最小权限**（strict）：只有纯计算 + `json`/`math`（M5） |
+| `Engine::with_sandbox(Sandbox)` / `permissive()` | ✅ | 指定沙箱档位 / 旧的全内置行为（M5） |
+| `sandbox()` / `set_sandbox(Sandbox)` | ✅ | 读取 / 运行期替换沙箱（替换会重建全局表） |
+| `memory_used()` | ✅ | 本次求值已计费的近似字节数（M5 / T5.3） |
 | `set_global(name, Value)` / `get_global(name)` | ✅ | 注入/读取全局 |
 | `register_fn(name, cb)` | ✅ | 注册原生函数；签名 `Fn(&[Value]) -> Result<Value, String> + Send + Sync` |
+| `register_module(NativeModule)` | ✅ | 注册宿主自定义模块；与内置同名时返回 `Error::ModuleConflict`（M5 / T5.5） |
 | `set_fuel(Option<u64>)` / `get_fuel()` | ✅ | 设置/读取燃料预算（每次 `eval` 自动重新装填，T2.6） |
 | `remaining_fuel()` / `reset_fuel()` | ✅ | 查询剩余燃料 / 手动装填（T2.6） |
-| `eval_value(source) -> Value` | ✅ | 求值并返回原生值 |
+| `eval_value(source) -> Result<Value, Error>` | ✅ | 求值并返回原生值（不含位置） |
+| `eval_diagnostic(source) -> Result<Value, EvalFailure>` | ✅ | 求值并在失败时附带**位置**（T1.8，见 §9.2） |
 | `eval::<T: FromValue>(source)` | ✅ | 泛型转换返回 |
-| 公共类型 re-export（`Value` / `Closure` / `VmError` / `ParseError`） | ⚠️ | **未导出**：`use ada_engine::{Engine, Value}` 编译失败（E0603），宿主必须自行依赖 `ada_vm`（任务 T0.7） |
-| `set_memory_limit` | 📋 | T5.3 |
-| `set_sandbox_profile` | 📋 | T5.1 |
-| `register_module`（`NativeModule` trait） | 📋 | T5.5 |
-| `eval_async` / `register_async_fn` | 📋 | T4.4 |
-| 执行超时 | 📋 | T5.4 |
+| 公共类型 re-export | ✅ | `use ada_engine::{Engine, Value, VmError, Sandbox, ...}` 即可，无需直接依赖 `ada_vm`（T0.7） |
+| `eval_async` / `register_async_fn` | ❌ | 不做：D2 选择单线程协作式调度，宿主侧用 `Vm`/脚本内 `spawn` 即可（T4.4） |
+| 执行超时 | ✅ | 经 `Sandbox::with_wall_clock_limit`（M5 / T5.4）而非独立 API |
+
+### 9.2 诊断信息 ✅（T1.8）
+
+```rust
+pub struct Position { pub line: usize, pub col: usize }   // 均从 1 开始
+pub struct EvalFailure { pub error: Error, pub position: Option<Position> }
+
+let mut engine = Engine::new();
+match engine.eval_diagnostic(source) {
+    Ok(value) => { /* ... */ }
+    Err(failure) => {
+        // failure.error 保留错误种类，宿主可继续 match
+        // failure.to_string() 给出 "line:col: <消息>"
+        eprintln!("{failure}");
+    }
+}
+```
+
+- `eval_value` 保持原签名（只返回 `Error`），老代码不受影响；两者共享同一条实现路径。
+- `Error::position()` 覆盖自带 span 的类别（词法/语法/编译）；运行时位置由 `EvalFailure` 提供。
+- 位置归属规则见 §8.2；`crates/ada_engine/tests/diagnostics.rs` 固定这些行为。
 
 ### 9.2 `FromValue` 实现 ✅
 
@@ -378,11 +429,10 @@ file: error: <消息>              # 编译/运行时错误：当前没有 span
 ### 9.3 嵌入示例（可直接编译）
 
 ```rust
-use ada_engine::Engine;
-use ada_vm::Value;   // ⚠️ 当前必须显式依赖 ada_vm：ada_engine 尚未 re-export Value（任务 T0.7）
+use ada_engine::{Engine, Value};
 
 fn main() -> Result<(), ada_engine::Error> {
-    let mut engine = Engine::new();
+    let mut engine = Engine::new();          // strict：只放行纯计算 + json/math
     engine.set_fuel(Some(50_000));
     engine.register_fn("calculate_tax", |args: &[Value]| {
         let income = args.first().and_then(|v| v.as_float()).unwrap_or(0.0);
@@ -399,9 +449,12 @@ fn main() -> Result<(), ada_engine::Error> {
 }
 ```
 
-> 该示例已在集成测试中验证可编译可运行（`cargo test -p ada_engine`）。T0.7 完成后可简化为 `use ada_engine::{Engine, Value};`。
+> `Engine` 只依赖 `ada_engine` 即可（`Value`/`VmError`/`Sandbox` 等已 re-export，T0.7）；
+> 该示例由文档示例门禁编译验证（`crates/ada_engine/tests/doc_examples.rs`）。
 
-> ⚠️ 当前 `set_fuel` 是一次性配额（§7.1），宿主若在同一 `Engine` 上连续求值，需自行重建 `Engine` 或等待 T2.6。
+> 需要宿主能力（`time`/`env`/`sys`/`sleep_ms`）时用 `Engine::permissive()` 或
+> `Engine::with_sandbox(Sandbox::standard())`；`set_fuel` 是**每次求值**的配额，
+> 每次 `eval*` 自动重新装填（T2.6）。
 
 ---
 

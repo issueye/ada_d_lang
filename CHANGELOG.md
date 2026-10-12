@@ -7,7 +7,17 @@
 
 ### Added
 
-- **AI 单页规格（M7 / T7.4）**：`docs/AI_GUIDE.md`——给模型（或人）的语法/语义速查，含 14 个
+- **错误定位（T1.8）**：所有类别的错误现在都携带源码位置——
+  `CompileError` 变体带 `Span`（`span()` 访问器），VM 用 `FunctionProto.spans` +
+  失败指令下标定位（在帧栈被清空前记录），任务失败用任务**自己**的位置。
+  CLI 对语法/编译/运行时/任务四类错误全部输出 `file:line:col: error: <消息>`。
+  新增 `Engine::eval_diagnostic() -> Result<Value, EvalFailure>`、`EvalFailure { error, position }`、
+  `Position { line, col }` 与 `Error::position()`；`eval_value` 签名不变（老代码无需改动）。
+  测试：`crates/ada_engine/tests/diagnostics.rs`（12 个）。
+- **宿主 panic 兜底（T1.7）**：`Vm::execute` 边界 `catch_unwind`，原生回调 / 适配器回调 /
+  自定义模块函数里的 panic 转为 `VmError::HostPanic { message }`（保留 panic 消息与失败位置），
+  不再杀死宿主进程；测试见 `crates/ada_engine/tests/host_panic.rs`（4 个）。
+- **AI 单页规格（M7 / T7.4）**：`docs/AI_GUIDE.md`——给模型（或人）的语法/语义速查，含 15 个
   ```` ```ada run ```` 代码块（由真实 CLI 执行比对输出）、反直觉规则表、错误信息对照表与提示模板；
   `examples/ai/{transform,async,validate}.ada` 三个完整示例 + golden 输出，
   由 `crates/ada_cli/tests/ai_guide.rs` 守门。
@@ -95,9 +105,10 @@
   直接使用 `Vm::new()` 的场合不受影响（仍是全量内置）。
 - `env.get`/`env.has` 只对白名单键读取宿主环境；白名单为空时读取任何键都得到 `nil`/`false`。
 - CLI 默认使用 `standard` 档（本地工具定位），`--strict` 可切换到最小权限。
-- **CLI 错误格式统一（T0.6）**：错误从 `Error: {Debug 形式}` 改为**单行**
-  `[file:]line:col: error: <消息>`（无 span 时退化为 `file: error: <消息>`），消息用 `Display` 人话；
-  语法错误保留 `expected` 细节。`crates/ada_cli/tests/cli_errors.rs` 固定该契约。
+- **CLI 错误格式统一（T0.6 / T1.8）**：错误从 `Error: {Debug 形式}` 改为**单行**
+  `[file:]line:col: error: <消息>`，消息用 `Display` 人话；语法错误保留 `expected` 细节。
+  编译错误与运行时错误现在也带行列（此前只会显示 `file: error: …`）。
+  `crates/ada_cli/tests/cli_errors.rs`（9 个用例）固定该契约。
 - **VM 性能优化（M6 / T6.2）**：闭包调用的捕获表改为 `Arc` 共享（不再每次克隆 `Vec`）、
   指令循环头部合并（每条指令只借出帧一次）、挂起检查免去每指令 32 字节写回、
   墙钟/指令计数计量合并为单布尔判断（修掉 M5 引入的每指令开销）。
