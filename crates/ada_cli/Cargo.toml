@@ -12,3 +12,8 @@ ada_bytecode = { path = "../ada_bytecode" }
 clap = { workspace = true }
 rustyline = { workspace = true }
 
+[dev-dependencies]
+# 编辑器语法与 AI 规格的门禁需要它们
+ada_lexer = { path = "../ada_lexer" }
+serde_json = { workspace = true }
+

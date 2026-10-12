@@ -24,9 +24,11 @@ version = "0.1.0"
 dependencies = [
  "ada_bytecode",
  "ada_engine",
+ "ada_lexer",
  "ada_parser",
  "clap",
  "rustyline",
+ "serde_json",
 ]
 
 [[package]]
