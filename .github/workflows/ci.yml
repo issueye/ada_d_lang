@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality-gates:
+    name: Quality gates (fmt / clippy / test / docs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check (cargo fmt --check)
+        run: cargo fmt --all -- --check
+
+      - name: Lint (cargo clippy -D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 包含文档链接/锚点门禁与"规范文档不得写路线图"检查
+      # （crates/ada_cli/tests/doc_links.rs，见开发计划 T0.4 / §11）
+      - name: Tests (cargo test --workspace)
+        run: cargo test --workspace
