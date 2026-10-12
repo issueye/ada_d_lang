@@ -7,7 +7,21 @@
 
 ### Added
 
-### Added
+- **条件融合指令 `JumpIfNotCompare*`（T6.7）**：`if` / `while` / `match` guard 的条件是比较
+  表达式时，编译器直接发出"为假则跳转"，省掉一条比较指令、一个临时寄存器，以及一次
+  "bool 写入 + truthiness 读取"；`x += 1`（目标是普通局部变量）也改走 `BinaryConst`，
+  循环计数器每轮再省一条 `LoadInt` 与一个寄存器。可镜像时自动换向（`while 0 < i` → `Gt`）。
+  - **确定性收益**：fib 指令数 1,425,469 → **1,275,420（−10.5%）**；同一循环的对照写法
+    融合 **17 条** vs 未融合 **27 条**；新增基准程序 `while_loop.ada`（30 万次迭代 = 2,400,011 条指令）。
+  - ⚠️ **本轮墙钟数字不可用于归因**：测量时连没有相关模式的基准（json_roundtrip、string_concat）
+    也一并"变快"约 10%，属机器漂移；因此只声明确定性收益。`while_loop` 首次测得 15.1 ms。
+  - 比较语义收敛到 `compare_values`：通用比较指令、`BinaryConst` 的比较形态、条件融合指令
+    三者共用一份实现，语义与错误消息不可能分叉（同时消除了 T6.6 里接受的重复）。
+  - 顺带修掉自查出来的一个缺陷：`match` guard 的跳过跳转此前只按 `JumpIfFalse` 的形状回填
+    offset，融合后新指令的 offset 未被写入 → 所有分支都会被判定命中。金标准示例
+    `examples/ai/validate.ada` 立刻失败并定位到该处；现在回填走通用函数。
+  - 测试：`instruction_fusion.rs` 扩到 7 个用例（含 break/continue、NaN、非数值比较的错误消息、
+    嵌套 else-if、空 else 与短路条件）。
 
 - **常量融合指令 `BinaryConst`（T6.6）**：编译器把"一侧是 i32 整数字面量"的算术/比较
   （`x * 2 + 1`、`i % 2 == 0`、`while i < 5`）编成**单条**指令，省掉一条 `LoadInt` 与一次派发；

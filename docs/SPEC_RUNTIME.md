@@ -115,6 +115,7 @@ VM 的寄存器文件是 `Vec<Value>`（2048 槽），48 字节意味着 **96 Ki
 | **常量融合（T6.6）** | `BinaryConst{dst,op,src,value:i32}`：`dst = src <op> value`，`op` ∈ 算术与比较。编译器把"一侧是 i32 整数字面量"的表达式编成这一条（可镜像时自动换向：`2 < x` → `Gt`），省掉一条 `LoadInt` 与一次派发；语义与通用指令逐字一致（差分测试固定） |
 | 位运算 | `BitAnd` `BitOr` `BitXor` `Shl` `Shr` `{dst,lhs,rhs}` |
 | 跳转 | `Jump{offset}` `JumpIfFalse{cond,offset}` `JumpIfTrue{cond,offset}` `JumpIfNil{cond,offset}` `MatchFail`（T3.2：非穷尽 match 的显式失败） |
+| **条件融合（T6.7）** | `JumpIfNotCompare{op,lhs,rhs,offset}` 与 `JumpIfNotCompareConst{op,src,value,offset}`：`if`/`while`/`match` guard 的条件是比较表达式时，编译器直接发出"为假则跳转"，省掉比较指令、临时寄存器与一次 truthiness 读取。可镜像时自动换向（`while 0 < i` → `Gt`），不可镜像（`2 - x` 之类）不融合 |
 | 调用 | `Call{dst,callee,arg_start,arg_count}` `Return{src:Option<Reg>}` |
 | 全局 | `GetGlobal{dst,name_idx}` `SetGlobal{name_idx,src,kind:GlobalWrite}`（T8.3：`Assign`/`DeclareMut`/`DeclareImmutable`） |
 | 容器 | `NewArray{dst,start,count}` `NewMap{dst}` `MapSet{map,key,val}` `GetIndex{dst,target,index}` `SetIndex{target,index,val}` `GetField{dst,target,field_idx,optional}` `SetField{target,field_idx,val}` |
@@ -526,12 +527,13 @@ fn main() -> Result<(), ada_engine::Error> {
 
 | 基准程序 | 侧重 | release 墙钟（中位，Windows） | 指令数（确定性） |
 | :--- | :--- | :--- | :--- |
-| `fib.ada`（fib(24)，46,368 次调用） | 调用/闭包捕获 | 21.4 ms | **1,425,469** |
+| `fib.ada`（fib(24)，46,368 次调用） | 调用/闭包捕获 | 20.3 ms | **1,275,420** |
 | `numeric_loop.ada`（20 万次迭代） | 整数算术 | 15.4 ms | **1,400,009** |
 | `string_concat.ada`（2 万次 `+=`） | 字符串分配 | ~116 ms（O(n²) memcpy 主导，噪声大） | 100,010 |
 | `iterator_pipeline.ada`（20 万元素管道） | 适配器 + 闭包回调 | 46.9 ms | **1,100,009** |
 | `json_roundtrip.ada`（3000 次解析） | 原生模块 + 容器 | 11.0 ms | 45,012 |
-| 冷启动（编译 + 执行 `numeric_loop`） | 嵌入成本 | 13.9 ms | — |
+| `while_loop.ada`（30 万次 while 迭代） | while 条件 + 计数器（T6.7） | 15.1 ms | 2,400,011 |
+| 冷启动（编译 + 执行 `numeric_loop`） | 嵌入成本 | 13.4 ms | — |
 | 仅编译 `numeric_loop` | 前端成本 | 4.4 µs | — |
 
 > ⚠️ **测量纪律**：共享/开发机上的墙钟抖动实测可达 ±10%（`string_concat` 尤其明显，且它是
@@ -558,6 +560,7 @@ fn main() -> Result<(), ada_engine::Error> {
 | 计量合并为单布尔（T6.2d） | 墙钟检查 + 指令计数在关闭时只判一次布尔（修掉 M5 引入的每指令开销） | 同批测量 |
 | **`Value` 48 → 16 字节（T6.2e）** | `NativeFn`/`Intrinsic` 载荷改放 `Arc` 后面，寄存器文件 96 KiB → **32 KiB**（进 L1） | **iterator_pipeline −34.7%**、fib −10.1%、numeric_loop −9.8%、冷启动 −11.7%、json −6.5%（p<0.05） |
 | **常量融合 `BinaryConst`（T6.6）** | "一侧是 i32 整数字面量"的算术/比较编成单条指令（`x * 2 + 1` 由 4 条变 2 条；`2 < x` 自动换向为 `Gt`） | **指令数**（确定性）：fib −17.4%、iterator_pipeline **−31.3%**、numeric_loop −22.2%；**墙钟**：iterator_pipeline −15.8%、冷启动 −14.6%、fib −11.1%、numeric_loop −11.1%（json 无字面量运算，+2.0% 不显著 = 符合预期） |
+| **条件融合 `JumpIfNotCompare*`（T6.7）** | `if`/`while`/`match` guard 的条件是比较表达式时直接发出条件跳转；`x += 1`（复合赋值 + 字面量、目标为普通局部）也用 `BinaryConst` 完成 | **指令数**（确定性）：fib 1,425,469 → **1,275,420（−10.5%）**；同语义循环写法的对照：融合 **17 条** vs 未融合 **27 条**；新增 `while_loop.ada` 基准（30 万次迭代 = 2,400,011 条指令）。⚠️ 本次墙钟整体下降约 10%，但**无相关模式的基准（json/string_concat）也同样"变快"**，属机器漂移，故不据此声明墙钟收益 |
 | **累计（对 M6 原始基线）** | 六次改动 | fib 29.73→**21.41 ms（−28.0%）**、numeric_loop 20.63→**15.38 ms（−25.4%）**、iterator_pipeline 89.27→**46.95 ms（−47.4%）**、冷启动 21.77→**13.89 ms（−36.2%）**、json 13.95→12.30 ms（−11.8%） |
 
 **后续改动的性能核对（M7 轮次）**：T1.7 的 `catch_unwind` 兜底与 T1.8 的位置记录（后者只在
@@ -609,7 +612,7 @@ tag + 8 字节载荷的实际上限）。NaN-boxing 能再省的那 8 字节，�
 
 ### 11.7 今后的可优化点（按证据排序）
 
-1. ~~指令级特化/常量融合~~ ✅ 已完成（T6.6）：常量融合已落地（`BinaryConst`）。**剩余**：与*变量*常量无关的特化（按景内联缓存、`GetField` 方法表缓存）与超指令（compare+branch 融合）。
+1. ~~指令级特化/常量融合~~ ✅ 已完成（T6.6 常量融合、T6.7 条件融合）。**剩余**：按景内联缓存（类型反馈）、`GetField` 方法表缓存（现在每次方法访问都新建一个 `NativeFn`）、以及更多超指令（如 `IterNext`+`Jump` 融合）。
 2. 容器 `RwLock` 访问开销 → 单线程路径用 `RefCell`（需与 D6 一并复核）。
 3. 字符串 `+=` 是 O(n²)（`string_concat` 基准把这一点量化了）→ 若要优化需要语言级 builder 或 rope。
 4. JIT 前先做第 1 项，把解释器剩余开销压到 JIT 值得做为止。

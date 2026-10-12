@@ -148,8 +148,19 @@ fn open_markers_do_not_reference_completed_tasks() {
             if !trimmed.starts_with('|') {
                 continue;
             }
-            let is_open_marker = ["⚠️", "📋", "🚧"].iter().any(|m| trimmed.contains(m));
-            if !is_open_marker || trimmed.contains(DONE) {
+            // "开放声明"必须精确到**单元格开头**：正文里出现的 ⚠️（例如"收益：…；⚠️ 该
+            // 数字受机器漂移影响"）是对结果的说明，不是"任务未完成"。因此要求某个单元格
+            // 以标记开头，且没有任何单元格以 ✅ 开头（`✅⚠️` 这类"已完成但有已知局限"的
+            // 行同样不算开放声明）。
+            let cells: Vec<&str> = trimmed.split('|').map(str::trim).collect();
+            let starts_with_marker = |cell: &&str| {
+                ["⚠️", "📋", "🚧"]
+                    .iter()
+                    .any(|marker| cell.starts_with(marker))
+            };
+            if !cells.iter().any(starts_with_marker)
+                || cells.iter().any(|cell| cell.starts_with(DONE))
+            {
                 continue;
             }
             open_rows += 1;
