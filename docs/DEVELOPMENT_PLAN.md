@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **178**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
+| 测试总数 | 34 | **180**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `security.rs` 21 + `doc_examples.rs` 15 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2，另含各 crate 单元测试 34） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -256,17 +256,22 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M6 · 性能与 JIT 📋（预计 3–6 周，需先有基准）
+### M6 · 性能与 JIT 🚧（T6.1 ✅ / T6.2 🚧 13% / T6.3 ✅ / T6.5 ✅ / T6.4 📋 延后）
 
-| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 |
+| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T6.1 | 基准基线：`criterion`，覆盖 fib 递归、数值循环、字符串拼接、迭代器管道、JSON 解析 | W6 | P1 | `benches/`（新） | 5 组基准出数；结果归档到 CI artifact |
-| T6.2 | VM 微优化：寄存器窗口回收、常量折叠（`LoadInt+Add`）、常用指令融合 | W2 | P2 | `compiler.rs`, `vm.rs` | 基准相较 T6.1 基线提速 ≥30%，无回归 |
-| T6.3 | 决策 D1 落地：维持 `enum Value` 或实施 NaN-boxing | W2 | P2 | `value.rs` | 决策记录 + （若实施）基准提速数据 |
-| T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | W2 | P3 | `crates/ada_jit/`（新） | 热点函数原生执行；`fib(30)` 较 VM 提速 ≥10x |
-| T6.5 | 性能回归门禁：基准劣化 >5% 时 CI 报警 | W6 | P3 | CI 配置 | 门禁生效 |
+| ✅ T6.1 | 基准基线：`criterion`，覆盖 fib 递归、数值循环、字符串拼接、迭代器管道、JSON 解析 | W6 | P1 | `benches/`（新，独立包）、`crates/ada_vm/examples/size_probe.rs` | 完成证据：5 组基准 + 冷启动 + 仅编译共 7 项出数（见 SPEC_RUNTIME §11.1）；基准程序源 `benches/programs/*.ada` 由墙钟基准与指令数门禁共用；`--no-run` 与出数已进 CI（artifact：日志） |
+| 🚧 T6.2 | VM 微优化：捕获表共享、指令循环头部合并、挂起检查免写、计量合并 | W2 | P2 | `vm.rs`, `value.rs` | **部分达成**：累计 **≈13%**（fib −13.7%、numeric_loop −12.1%、iterator_pipeline −10.7%、冷启动 −16.6%），未达计划的 ≥30%；剩余路径与预期收益见 SPEC_RUNTIME §11.3/§11.7（Value 瘦身 48→16B、指令特化、JIT） |
+| ✅ T6.3 | 决策 D1 落地：维持 `enum Value` 或实施 NaN-boxing | W2 | P2 | `value.rs` | 完成证据：**D1 = A（维持 enum）**，依据 `size_of::<Value>() == 48`（胖变体为 `NativeFn`/`Intrinsic`）、`Instruction == 12B`、以及"4 项微优化已拿到 13% 而 Value 未变"——瓶颈不在值大小；同时记录更便宜的候选（box 化胖变体 → 16B）。另完成 M5 遗留的 **D6 = A（维持 `Arc<RwLock>`）** 评估 |
+| 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | W2 | P3 | `crates/ada_jit/`（新） | **本轮延后**（理由见下）；验收线保持 `fib(30)` 较 VM 提速 ≥10×，基准已就绪可直接对标 |
+| ✅ T6.5 | 性能回归门禁：劣化 >5% 报警 | W6 | P3 | `crates/ada_vm/tests/perf_budget.rs`, `benches/budgets.txt`, CI | 完成证据：门禁度量为**指令数**（完全确定、零抖动），超基线 5% 即失败，并校验基准程序的**计算正确性**；CI 新增 `benchmarks` job（显式跑门禁 + 编译并出数墙钟基准，墙钟不设阈值） |
 
-**退出标准**：性能陈述有基准数据支撑；白皮书中所有性能数字改为引用基准结果。
+**退出标准**：✅ 性能陈述有基准数据支撑（SPEC_RUNTIME §11 与 WHITEPAPER 已全部改为引用基准数字）。
+
+**T6.4 延后的理由（记录在案）**：① Cranelift 引入重量级依赖与新 crate，工作量按计划为 3–6 周，
+本轮不足以做到"可验证、不牺牲质量"；② 前置条件（基准 + 指令数门禁）本轮刚好建立，
+现在开始 JIT 才有客观对标线；③ 计划内更便宜的一步（Value 瘦身 48→16B）尚未做，
+按"先把解释器压到值得 JIT"的顺序应排在前面。
 
 ---
 
@@ -308,7 +313,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 178 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2）。
+**当前状态**：`cargo test --workspace` → 180 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 安全 21 + 文档示例 15 + 多轮求值 8 + golden 3 + 文档门禁 2 + 性能门禁 2）。
 
 ---
 
@@ -355,12 +360,12 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | ID | 决策点 | 选项 | 影响 | 截止 |
 | :--- | :--- | :--- | :--- | :--- |
-| D1 | 值模型 | A 保持 `enum Value`；B 实施 NaN-boxing | B 影响 `value.rs` 全量重写与所有 builtins；收益需基准证明 | M6 开始前 |
+| D1 | 值模型 | ~~A 保持 `enum Value`~~；~~B 实施 NaN-boxing~~ → **已决：A（保持 enum）** | **决策（2026-10，M6 执行期）**：`size_of::<Value>() == 48`（`NativeFn`/`Intrinsic` 是胖变体），但 4 项 VM 微优化已拿到 ≈13% 而 Value 未变 → 当前瓶颈不是值大小；NaN-boxing 需 `value.rs` 全量重写 + 全部 builtins 改造 + 与 `Arc` 所有权耦合。更便宜的一步（box 化胖变体 → 16B）记为候选优化，等解释器剩余开销被压到值得 JIT 时再评估 | ✅ 已决（T6.3） |
 | D2 | 异步实现 | ~~A 真 Fiber + Tokio~~；~~B 同步 Future 占位~~ → **已决：C（单线程协作式事件循环，无 Tokio/无线程）** | **决策（2026-10，M4 执行期）**：任务 = 同一 VM 上可保存的执行现场（帧栈 + 寄存器窗口），挂起点白名单（`sleep_ms`/`yield_now`/`await*`/`timeout`），就绪队列 FIFO + 真实定时器。理由：零依赖、执行顺序完全确定（对 AI 生成代码可测性关键）、嵌入成本低、挂起点天然是沙箱墙钟检查点。代价：无 CPU 并行；适配器回调内无法保存宿主栈，`sleep_ms` 退化为阻塞（已记录为 G-A9）。T4.4 因此重定义为 ❌ 非目标 | ✅ 已决（M4 落地） |
 | D3 | 迭代器求值 | ~~A 即时~~；~~B 惰性~~ → **已决：A（即时）** | **决策（2026-10，M2 执行期）**：适配器一律物化为 `Array`，先把能力与错误契约打通；惰性链需引入迭代器对象与去虚拟化，收益要用基准证明（缺口 G-S12）。若未来启用惰性，`collect()` 语义与 `IterNext` 指令可复用 | ✅ 已决（T2.1 落地） |
 | D4 | `{ x }` 歧义 | ~~A 判为 block~~；~~B 保持现状判 map~~ → **已决：B（保持 map）** | **决策（2026-10，M3 执行期）**：`{}` 是 map 字面量，`{ name }` 是 Token 高效的简写（AI-first 目标），块表达式改为"必须以语句开头"即可无歧义地区分（SPEC_LANGUAGE §5.6）。选 A 会删掉 map 简写并静默改变既有脚本含义 | ✅ 已决（T3.3 落地） |
 | D5 | 整数溢出语义 | ~~A 报错~~；~~B 回绕~~ → **已决：A（报错）** | **决策（2026-10，M1 执行期）**：采用 `checked_*` + `VmError::TypeError`。理由：AI 沙箱场景下"静默回绕"会产生难排查的错误结果，而硬错误可被宿主捕获；若未来基准显示热路径成本显著，再评估回绕或 f64 提升 | ✅ 已决（T1.2 落地） |
-| D6 | 内存模型 | A 维持 `Arc<RwLock>`；B 引入 GC | B 是大重构 | M5 结束前评估 |
+| D6 | 内存模型 | ~~A 维持 `Arc<RwLock>`~~；~~B 引入 GC~~ → **已决：A（维持 `Arc<RwLock<Value>>`）** | **决策（2026-10，M6 执行期，M5 遗留评估项）**：无 GC 停顿、析构确定、与单线程协作式调度（D2）匹配；代价是引用计数开销与**循环引用泄漏**。泄漏由 M5 的 `max_memory_bytes` 兜底（从"无界"降为"有界"），规范已记录该组合语义。tracing GC 会引入停顿与不确定性，与"可预测"定位冲突 | ✅ 已决（SPEC_RUNTIME §11.5） |
 | D7 | `match` 非穷尽 | ~~A 运行时错误~~；~~B 编译期警告~~ → **已决：A（运行时错误）** | **决策（2026-10，M3 执行期）**：无 arm 匹配时旧实现会留下**未赋值的目标寄存器**（读到上一个值而非 `nil`），这是静默错误值；改为 `MatchFail` 指令抛 `VmError::NoMatch`。选 B（仅警告）无法阻止错误值继续传播 | ✅ 已决（T3.2 落地） |
 | D8 | 闭包捕获语义 | ~~A 值拷贝~~；~~B 引用共享（Cell）~~ → **已决：B（引用共享）** | **决策（2026-10，M2 执行期）**：被捕获变量装箱为共享槽，闭包内写入对外层可见；循环变量每轮独立槽（类 JS `let`）；代价是被捕获变量的读写多一层 Cell 间接（仅对被捕获的变量生效，未捕获的局部变量仍是纯寄存器） | ✅ 已决（T2.2 落地） |
 
@@ -405,7 +410,7 @@ docs/
 | M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位遗留） |
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
-| M6 性能与 JIT | 3–6 周 | 📋 | ☐ |
+| M6 性能与 JIT | 3–6 周 | 🚧 | ☑（T6.1/T6.3/T6.5 完成；T6.2 达成 13%/30%；T6.4 延后） |
 | M7 生态工具链 | 长期 | 📋 | ☐ |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。

@@ -7,6 +7,11 @@
 
 ### Added
 
+- **基准与性能门禁（M6 / T6.1 / T6.5）**：`benches/`（独立包，criterion）覆盖 5 组基准 + 冷启动 + 仅编译，
+  程序源 `benches/programs/*.ada`；`crates/ada_vm/tests/perf_budget.rs` 以**指令数**做确定性门禁
+  （超基线 5% 失败，并校验基准程序的计算结果），基线存于 `benches/budgets.txt`。
+  `Vm::enable_instruction_counting` / `instructions_executed` 公开计量接口；CI 新增 `benchmarks` job。
+- `crates/ada_vm/examples/size_probe.rs`：打印 `size_of::<Value>()` 等值模型尺寸（决策 D1 的证据工具）。
 - **沙箱与宿主安全（M5 / T5.1–T5.6）**：`Engine::new()` 现在是**最小权限**（strict）。
   - `Sandbox` 三档 profile + builder：`strict()`（仅纯计算 + `json`/`math`；内存 16 MiB / 墙钟 5s / 任务 128）、`standard()`（+ `time`/`sys`/`env` 白名单/`sleep_ms`）、`permissive()`（等效 M5 之前）。
   - 被关闭的能力不注册到脚本名字空间，访问报 `VmError::CapabilityDenied { name, profile }`（与 `UndefinedGlobal` 可区分）。
@@ -78,6 +83,13 @@
   直接使用 `Vm::new()` 的场合不受影响（仍是全量内置）。
 - `env.get`/`env.has` 只对白名单键读取宿主环境；白名单为空时读取任何键都得到 `nil`/`false`。
 - CLI 默认使用 `standard` 档（本地工具定位），`--strict` 可切换到最小权限。
+- **VM 性能优化（M6 / T6.2）**：闭包调用的捕获表改为 `Arc` 共享（不再每次克隆 `Vec`）、
+  指令循环头部合并（每条指令只借出帧一次）、挂起检查免去每指令 32 字节写回、
+  墙钟/指令计数计量合并为单布尔判断（修掉 M5 引入的每指令开销）。
+  实测（criterion，释放构建）：`fib(24)` **−13.7%**、20 万次数值循环 **−12.1%**、
+  迭代器管道 **−10.7%**、冷启动 **−16.6%**；未达计划 ≥30% 的目标，剩余路径见 SPEC_RUNTIME §11.3/§11.7。
+- 字符串拼接的内存计费由"每次记整串长度"改为**按增量**计费（`s += x` 不再二次方消耗预算）；
+  安全测试仍能拒绝真正的字符串放大攻击。
 
 ### Changed
 

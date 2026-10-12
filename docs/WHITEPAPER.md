@@ -43,7 +43,7 @@
 | Token-Density First | 在保持可读性的前提下最大化每 Token 的语义密度 | 无强制分号、单行函数、隐式返回、`mut` 一行声明 |
 | Low Perplexity for LLMs | 大模型零示例即可生成正确代码 | 只用 Rust/TS/Python 的交集形态；`?.`、`??`、`|>`、`match` 均为高频已知符号 |
 | Dual Execution Modes | 独立 CLI 与嵌入式引擎同一套实现 | `ada_cli` 与 `ada_engine` 共享同一 VM；`Engine` 提供 `register_fn` / `eval<T>` |
-| Tiered Performance | 冷启动毫秒级解释，热点再提升 | Tier 0 寄存器 VM 已落地；Tier 1 VM 优化与 Tier 2 Cranelift JIT 为规划项 |
+| Tiered Performance | 冷启动毫秒级解释，热点再提升 | Tier 0 寄存器 VM 已落地并有**基准支撑**（fib(24) 25.7 ms、20 万次数值循环 18.1 ms、编译 4.9 µs；见 [SPEC_RUNTIME §11.1](SPEC_RUNTIME.md)）；Tier 1 微优化已落地 4 项（≈13%）、Tier 2 Cranelift JIT 为规划项（T6.4） |
 | Fail-Safe Sandboxing | 宿主永远不该被脚本拖死或击穿 | Fuel 熔断已落地；内存预算、墙钟超时、权限分级为规划项（详见开发计划 M5） |
 
 ---
