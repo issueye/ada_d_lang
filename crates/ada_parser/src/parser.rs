@@ -682,6 +682,27 @@ impl Parser {
         })
     }
 
+    /// `{` 之后是 map 字面量还是块？（决策 D4 的唯一判定点）
+    ///
+    /// **前置条件**：游标必须已经停在 `{` **之后**（`parse_brace_expr` 的调用约定）。
+    ///
+    /// Map 形状：`{ key: val }`、`{ key, ... }`、`{ key }`、`{}`（空 map）。
+    /// 语句（`let`/`for`/…）一定走块。所有"括号体"位置（表达式、`match` 分支体、
+    /// 闭包体）最终都经过 `parse_brace_expr`，保证判定一致（T3.3 修订）。
+    fn brace_starts_map(&self) -> bool {
+        // 空 `{}` 判为 map（D4）
+        if self.check(&TokenKind::RBrace) {
+            return true;
+        }
+        matches!(
+            (self.peek_kind(), &self.peek_next().kind),
+            (TokenKind::Ident(_), TokenKind::Colon)
+                | (TokenKind::String(_), TokenKind::Colon)
+                | (TokenKind::Ident(_), TokenKind::Comma)
+                | (TokenKind::Ident(_), TokenKind::RBrace)
+        )
+    }
+
     fn parse_brace_expr(&mut self, start_span: Span) -> Result<Expr, ParseError> {
         self.skip_newlines();
 
@@ -695,17 +716,8 @@ impl Parser {
             });
         }
 
-        // 2. Disambiguate Map vs Block:
-        // A Map looks like: `{ key: val, ... }` or `{ key, ... }`
-        let is_map = matches!(
-            (self.peek_kind(), &self.peek_next().kind),
-            (TokenKind::Ident(_), TokenKind::Colon)
-                | (TokenKind::String(_), TokenKind::Colon)
-                | (TokenKind::Ident(_), TokenKind::Comma)
-                | (TokenKind::Ident(_), TokenKind::RBrace)
-        );
-
-        if is_map {
+        // 2. Disambiguate Map vs Block（与 `match` 分支体共用同一判定）
+        if self.brace_starts_map() {
             self.parse_map_literal_tail(start_span)
         } else {
             self.parse_block_expr_tail(start_span)
@@ -918,8 +930,13 @@ impl Parser {
         self.expect(TokenKind::FatArrow, "=>")?;
         self.skip_newlines();
 
+        // T3.3 修订：分支体与普通表达式使用同一套括号消歧（`{ k: v }` 是 map 字面量，
+        // `{ let a = 1; a }` 才是块），不再无条件把 `{` 当块。
+        // 注意：`brace_starts_map()` 的契约是"游标已停在 `{` 之后"，
+        // 因此这里先消费 `{` 再交给 `parse_brace_expr` 统一判定。
         let body = if self.check(&TokenKind::LBrace) {
-            self.parse_block_expr()?
+            let lbrace = self.advance();
+            self.parse_brace_expr(lbrace.span)?
         } else {
             self.parse_expr()?
         };

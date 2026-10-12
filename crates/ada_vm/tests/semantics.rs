@@ -254,6 +254,30 @@ fn brace_with_a_bare_identifier_is_a_map_not_a_block() {
     assert_eq!(ok("let v = { let a = 1\n    a + 1 }\nv"), Value::Int(2));
 }
 
+#[test]
+fn match_arm_bodies_follow_the_same_brace_rule() {
+    // 修订（T3.3）：`match` 分支体不再无条件按块解析，与表达式位置规则一致。
+    // map 体：`{ k: v }`
+    assert_eq!(ok("match 1 { _ => { ok: true } }.ok"), Value::Bool(true));
+    // 块体：以语句开头 → 块，末尾表达式为值
+    assert_eq!(
+        ok("match 1 { _ => { let a = 2\n    a * 3 } }"),
+        Value::Int(6)
+    );
+    // guard 分支同样适用
+    assert_eq!(
+        ok("match 5 { n if n > 3 => { value: n }, _ => { value: 0 } }.value"),
+        Value::Int(5)
+    );
+    // 空 `{}` 按 D4 视为空 map（不是空块）
+    assert_eq!(
+        ok("let m = match 1 { _ => {} }\ntype_of(m)"),
+        Value::string("map")
+    );
+    // 数组字面量体（无括号）不受影响
+    assert_eq!(ok("match 2 { 2 => [1, 2], _ => [] }.len"), Value::Int(2));
+}
+
 // ============================================================ 交叉回归
 
 #[test]
