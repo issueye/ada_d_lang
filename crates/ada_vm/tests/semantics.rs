@@ -326,3 +326,57 @@ fn large_integer_literals_match_in_patterns() {
         Value::string("miss")
     );
 }
+
+// ============================================================ T8.2 循环关键字作用域
+
+#[test]
+fn loop_keywords_outside_a_loop_are_compile_errors() {
+    // 此前 `break`/`continue` 在循环外被编译器静默忽略（函数直接返回 nil）
+    for source in [
+        "break",
+        "continue",
+        "fn f() {\n    break\n}\nf()",
+        "fn g() {\n    continue\n}\ng()",
+        "if true {\n    break\n}",
+        "for x in 3 {\n    let f = () => { break }\n    f()\n}",
+    ] {
+        match compile_err(source) {
+            CompileError::LoopKeywordOutsideLoop { keyword, .. } => assert!(
+                keyword == "break" || keyword == "continue",
+                "{source:?}: unexpected keyword {keyword:?}"
+            ),
+            other => panic!("{source:?}: expected LoopKeywordOutsideLoop, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn loop_keywords_inside_loops_still_work() {
+    assert_eq!(
+        ok("mut i = 0\nwhile true {\n    i += 1\n    if i > 3 { break }\n}\ni"),
+        Value::Int(4)
+    );
+    assert_eq!(
+        ok("mut s = 0\nfor x in range(0, 5) {\n    if x % 2 == 0 { continue }\n    s += x\n}\ns"),
+        Value::Int(4)
+    );
+    assert_eq!(
+        ok("mut i = 0\nmut n = 0\nwhile i < 5 {\n    i += 1\n    if i % 2 == 0 { continue }\n    n += 1\n}\nn"),
+        Value::Int(3)
+    );
+    // 嵌套循环：break 只跳出最内层
+    assert_eq!(
+        ok("mut hits = 0\nfor a in 3 {\n    for b in 3 {\n        if b == 1 { break }\n        hits += 1\n    }\n}\nhits"),
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn loop_keyword_errors_carry_a_position() {
+    // T1.8：编译错误自带 span，CLI 因此能报 file:line:col
+    let mut parser = Parser::from_source("fn f() {\n    break\n}\nf()").expect("lex");
+    let program = parser.parse_program().expect("parse");
+    let err = Compiler::compile_program(&program).expect_err("should not compile");
+    let span = err.span().expect("compile error should carry a span");
+    assert_eq!(span.line, 2, "break is on line 2");
+}

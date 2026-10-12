@@ -13,18 +13,21 @@ pub enum CompileError {
     InvalidAssignmentTarget { span: Span },
     #[error("Cannot assign to immutable variable '{name}' (declare it with `mut`)")]
     AssignToImmutable { name: String, span: Span },
+    #[error("`{keyword}` used outside of a loop (only valid inside `while`/`for`)")]
+    LoopKeywordOutsideLoop { keyword: String, span: Span },
 }
 
 impl CompileError {
     /// 出错位置（T1.8）。
     ///
     /// `TooManyRegisters` 是寄存器分配的内部上限，产生点没有可归属的用户表达式，
-    /// 因此返回 `None`；其余三种都能给出行列。
+    /// 因此返回 `None`；其余都能给出行列。
     pub fn span(&self) -> Option<Span> {
         match self {
             CompileError::VariableNotFound { span, .. }
             | CompileError::InvalidAssignmentTarget { span }
-            | CompileError::AssignToImmutable { span, .. } => Some(*span),
+            | CompileError::AssignToImmutable { span, .. }
+            | CompileError::LoopKeywordOutsideLoop { span, .. } => Some(*span),
             CompileError::TooManyRegisters => None,
         }
     }
@@ -657,23 +660,33 @@ impl Compiler {
             }
 
             Stmt::Break { span } => {
-                if let Some(ctx) = self.loop_stack.last_mut() {
-                    let jmp_idx = self.proto.emit(Instruction::Jump { offset: 0 }, *span);
-                    ctx.break_jumps.push(jmp_idx);
-                }
+                // T8.2：循环外的 `break` 此前被静默忽略（函数直接返回 nil），
+                // 与 M3 的"不静默"原则冲突，现在报编译错误。
+                let Some(ctx) = self.loop_stack.last_mut() else {
+                    return Err(CompileError::LoopKeywordOutsideLoop {
+                        keyword: "break".to_string(),
+                        span: *span,
+                    });
+                };
+                let jmp_idx = self.proto.emit(Instruction::Jump { offset: 0 }, *span);
+                ctx.break_jumps.push(jmp_idx);
             }
 
             Stmt::Continue { span } => {
-                if let Some(ctx) = self.loop_stack.last() {
-                    let loop_offset =
-                        (ctx.start_ip as i32) - (self.proto.instructions.len() as i32) - 1;
-                    self.proto.emit(
-                        Instruction::Jump {
-                            offset: loop_offset,
-                        },
-                        *span,
-                    );
-                }
+                let Some(ctx) = self.loop_stack.last() else {
+                    return Err(CompileError::LoopKeywordOutsideLoop {
+                        keyword: "continue".to_string(),
+                        span: *span,
+                    });
+                };
+                let loop_offset =
+                    (ctx.start_ip as i32) - (self.proto.instructions.len() as i32) - 1;
+                self.proto.emit(
+                    Instruction::Jump {
+                        offset: loop_offset,
+                    },
+                    *span,
+                );
             }
 
             Stmt::Expr { expr, .. } => {
