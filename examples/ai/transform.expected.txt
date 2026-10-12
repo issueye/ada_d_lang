@@ -1,0 +1,5 @@
+name      doubled
+parse      6
+compile      10
+run      22
+rows=3 total=38 max=22

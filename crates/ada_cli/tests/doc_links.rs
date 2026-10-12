@@ -223,11 +223,16 @@ fn documentation_links_and_anchors_resolve() {
             }
 
             let resolved = normalize(base, path_part);
-            let Some(target_anchors) = anchors.get(&resolved) else {
+            // 目标存在性检查对所有相对链接生效（包括示例脚本、许可证等非 Markdown 文件）；
+            // 锚点检查只对 Markdown 目标有意义（mdBook 站点也会链接到非 md 文件）。
+            if !workspace_root().join(&resolved).exists() {
                 broken.push(format!(
                     "{}:{line_no}: file missing: {target}",
                     file.display()
                 ));
+                continue;
+            }
+            let Some(target_anchors) = anchors.get(&resolved) else {
                 continue;
             };
             if let Some(anchor) = anchor {
