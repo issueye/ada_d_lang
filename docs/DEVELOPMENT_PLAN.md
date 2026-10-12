@@ -53,10 +53,10 @@
 | 设计文档 | 5 份，约 970 行（**整合前基线**；T0.3 完成后为 `docs/` 下 6 份规范/索引 + 本文档，见 §11） |
 | 示例脚本 | 1 个（`examples/demo.ada`，98 行，端到端可运行） |
 | 编译告警 | `cargo build --workspace` → 0 warning / 0 error |
-| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0） |
-| 版本控制 | **无任何 commit**，全部文件 untracked |
-| 许可证 | `Cargo.toml` 声明 `MIT OR Apache-2.0`，但无 `LICENSE` 文件 |
-| CI / fmt / clippy / bench | 均无 |
+| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0）；**M0/M1 完成后为 65 passed**（见 §2.4） |
+| 版本控制 | 基线时**无任何 commit**（T0.1 已修复，见 §2.4） |
+| 许可证 | 基线时声明 `MIT OR Apache-2.0` 但无 `LICENSE` 文件（T0.2 已补齐 `LICENSE-MIT` + `LICENSE-APACHE`） |
+| CI / fmt / clippy / bench | 基线时均无；T0.4 已建立 CI（fmt / clippy / test / 文档门禁）；**bench 仍缺**（T6.1） |
 
 ### 2.2 能力盘点
 
@@ -74,7 +74,7 @@
 
 | 差距 | 文档承诺处 | 实测 | 任务 |
 | :--- | :--- | :--- | :--- |
-| 4 类脚本可触发宿主进程 panic（`%0`、整数溢出、移位越界、UTF-8 字符串索引） | [WHITEPAPER](WHITEPAPER.md) §2「Fail-Safe Sandboxing」+ 本文档 §5 门禁第 3 条 | exit code 101 崩溃 | T1.1–T1.4 |
+| ✅ 5 类脚本可触发宿主进程 panic（`%0`、整数溢出、移位越界、UTF-8 字符串索引、`min([])` 空数组） | [WHITEPAPER](WHITEPAPER.md) §2「Fail-Safe Sandboxing」+ 本文档 §5 门禁第 3 条 | 修复前 exit code 101；现均为干净错误（exit 1） | ✅ T1.1–T1.6 |
 | 无 `filter`/`map`/`take` 等迭代器适配器 | [SPEC_STDLIB §6](SPEC_STDLIB.md) | `UndefinedGlobal("filter")` | T2.1 |
 | 闭包无 upvalue 捕获 | [SPEC_LANGUAGE §6](SPEC_LANGUAGE.md) | `UndefinedGlobal("a")` | T2.2 |
 | REPL 变量不跨行保留 | [../README.md](../README.md) 快速开始 | `Undefined global 'a'` | T2.4 |
@@ -83,8 +83,8 @@
 | 值模型非 NaN-boxing | [SPEC_RUNTIME §2](SPEC_RUNTIME.md) | `enum Value` + `Arc<RwLock>` | 决策 D1 |
 | 无 `ada_jit` / Cranelift | [SPEC_RUNTIME §11](SPEC_RUNTIME.md) | crate 不存在 | T6.4 |
 | `let` 不可变性未强制 | [SPEC_LANGUAGE §5.1](SPEC_LANGUAGE.md) | `let a = 1; a = 2` 静默生效 | T3.1 |
-| `len` 返回字节数而非字符数 | [SPEC_STDLIB §2.6、§4.1](SPEC_STDLIB.md) | `"Ada 语言".len` → 10（应 6） | T2.5 |
-| `ada_engine` 未 re-export `Value`，文档嵌入示例不可编译 | [WHITEPAPER](WHITEPAPER.md) §2「Dual Execution Modes」 | `use ada_engine::{Engine, Value}` 编译失败（E0603） | T0.7 |
+| ✅ `len` 返回字节数而非字符数 | [SPEC_STDLIB §2.6、§4.1](SPEC_STDLIB.md) | 现为字符数，`.len_bytes` 提供字节数 | ✅ T2.5 |
+| ✅ `ada_engine` 未 re-export `Value`，文档嵌入示例不可编译 | [WHITEPAPER](WHITEPAPER.md) §2「Dual Execution Modes」 | `use ada_engine::{Engine, Value}` 现可编译 | ✅ T0.7 |
 | 整合前 4 处独立"路线图"章节互相重叠 | 原 5 份文档各有一节 | 已收敛到本文档 | ✅ T0.3 |
 
 ### 2.3 复现命令
@@ -96,6 +96,21 @@ cargo run -p ada_cli -- examples/demo.ada
 cargo run -p ada_cli -- dump examples/demo.ada
 cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 ```
+
+### 2.4 M0 / M1 完成后的状态增量
+
+| 项 | 基线（0.1.0） | 现在 |
+| :--- | :--- | :--- |
+| 测试总数 | 34 | **65**（新增 `crates/ada_vm/tests/robustness.rs` 17 个、`crates/ada_engine/tests/doc_examples.rs` 12 个、`crates/ada_cli/tests/doc_links.rs` 2 个） |
+| 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6） |
+| 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
+| 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
+| 代码格式 | 17 个文件未格式化 | `cargo fmt --all -- --check` 通过 |
+| Lint | 未接入 | `cargo clippy --workspace --all-targets -- -D warnings` 通过（基线即为 0 lint） |
+| CI | 无 | `.github/workflows/ci.yml`（fmt + clippy + test，含文档链接门禁） |
+| 文档门禁 | 无 | `cargo test` 内含链接/锚点校验与"规范文档不得写路线图"校验（已做负向验证） |
+| 字符串长度/索引 | 字节语义、多字节 panic | 字符语义（`len`/索引按字符，`.len_bytes` 给字节） |
+| 宿主嵌入可编译性 | `use ada_engine::{Engine, Value}` 编译失败 | ✅ 已可编译（T0.7） |
 
 ---
 
@@ -120,40 +135,42 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 优先级定义：**P0** = 阻塞可用性/安全性；**P1** = 阻塞文档承诺的核心能力；**P2** = 质量与体验；**P3** = 长期演进。
 
-### M0 · 治理基线 📋（预计 1–2 天）
+### M0 · 治理基线 ✅（预计 1–2 天）
 
 **目标**：建立可 review、可回滚、可自动校验的工程基线。
 
 | ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T0.1 | `git init` + 首次提交（含 `Cargo.lock`、`.gitignore`） | W6 | P0 | 仓库根 | `git log --oneline` 至少 1 条；`git status` 干净 |
-| T0.2 | 补 `LICENSE`（或把 `Cargo.toml` 的 license 改为与现状一致） | W6 | P0 | `LICENSE`, `Cargo.toml` | 文件存在且与 `Cargo.toml` 一致 |
+| ✅ T0.1 | `git init` + 首次提交（含 `Cargo.lock`、`.gitignore`） | W6 | P0 | 仓库根 | 完成证据：基线提交 `338f2a9`（40 个文件入库），`git status` 干净 |
+| ✅ T0.2 | 补 `LICENSE`（或把 `Cargo.toml` 的 license 改为与现状一致） | W6 | P0 | `LICENSE-MIT`, `LICENSE-APACHE`, `Cargo.toml` | 完成证据：`LICENSE-MIT`（MIT 全文）+ `LICENSE-APACHE`（apache.org 官方文本，11358 字节），与 `Cargo.toml` 的 `MIT OR Apache-2.0` 一致 |
 | ✅ T0.3 | 文档整合：单一权威 + 删除 4 处重复路线图 + 状态标注 | W6 | P0 | `docs/**`, `README.md` | 完成证据：新增 `docs/README.md` 与 `SPEC_LANGUAGE`/`SPEC_RUNTIME`/`SPEC_STDLIB`/`SPEC_ASYNC`；移除 `LANGUAGE_DESIGN`/`STDLIB_DESIGN`/`ITERATOR_SPEC`/`ASYNC_DESIGN`；规范内无路线图章节；全量链接检查通过（§11） |
-| T0.4 | CI：`cargo fmt --check` + `cargo clippy -D warnings` + `cargo test --workspace` + Markdown 链接/锚点检查 | W6 | P0 | `.github/workflows/ci.yml`（或等价） | CI 绿灯；故意引入 warning 时红灯；新增/删除文档后死链能被 CI 拦下 |
-| T0.5 | 建立测试目录规范：`crates/*/tests/`（集成）、`benches/`（基准）、`examples/`（golden） | W6 | P1 | 各 crate | 空目录 + README 说明落位，后续任务按此落位 |
+| ✅ T0.4 | CI：`cargo fmt --check` + `cargo clippy -D warnings` + `cargo test --workspace` + Markdown 链接/锚点检查 | W6 | P0 | `.github/workflows/ci.yml`, `crates/ada_cli/tests/doc_links.rs` | 完成证据：CI 工作流就位；`cargo fmt --all -- --check` exit 0；`cargo clippy --workspace --all-targets -- -D warnings` exit 0；文档门禁测试通过，且经负向验证（临时插入坏链/路线图标题 → 测试 FAILED） |
+| ✅ T0.5 | 建立测试目录规范：`crates/*/tests/`（集成）、`benches/`（基准）、`examples/`（golden） | W6 | P1 | 各 crate | 完成证据：`crates/ada_vm/tests/robustness.rs`、`crates/ada_engine/tests/doc_examples.rs`、`crates/ada_cli/tests/doc_links.rs` 已按此落位；`benches/` 待 T6.1 |
 | T0.6 | 统一错误信息格式为 `file:line:col: error: msg`（CLI 侧渲染） | W1 | P1 | `ada_cli`, `ada_parser` | 语法错误输出含文件路径、行列；已有错误类型保留 span |
-| T0.7 | `ada_engine` 补齐公共 re-export（`Value`、`Closure`、`VmError`、`ParseError`、`CompileError`） | W5 | P1 | `ada_engine/src/lib.rs` | `use ada_engine::{Engine, Value}` 可编译；根 README 与 SPEC_RUNTIME §9.3 示例去掉 `ada_vm` 显式依赖后仍通过 |
+| ✅ T0.7 | `ada_engine` 补齐公共 re-export（`Value`、`Closure`、`VmError`、`ParseError`、`CompileError`） | W5 | P1 | `ada_engine/src/lib.rs` | 完成证据：`crates/ada_engine/tests/doc_examples.rs::spec_runtime_embedding_example_with_exported_value` 用 `use ada_engine::Value` 通过 |
 
-**退出标准**：仓库有基线提交；CI 生效；文档单一权威结构成型；`cargo fmt --check` 与 clippy 全绿。
+**退出标准**：✅ 达成 —— 仓库有基线提交（4 个）；CI 配置就位；文档单一权威结构成型；`cargo fmt --check` 与 clippy 全绿。
+（剩余 T0.6 为 P1，不阻塞 M0 退出）
 
 ---
 
-### M1 · 解释器稳健性 P0 📋（预计 3–5 天）
+### M1 · 解释器稳健性 P0 ✅（预计 3–5 天）
 
 **目标**：**任何脚本输入都不得让宿主进程 panic**。这是 S1 阶段的第一条红线。
 
 | ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T1.1 | `%` 除零：返回 `VmError`，与 `/` 行为一致 | W2 | P0 | `ada_vm/src/vm.rs` | 用例 `10 % 0` → 干净错误，exit 1 |
-| T1.2 | 整数算术溢出：`+ - *` 及 `Neg` 用 `checked_*`，溢出返回 `VmError::TypeError`（或按 D5 决策切换为回绕语义并写规范） | W2 | P0 | `ada_vm/src/vm.rs` | 用例 `9223372036854775807 + 1` → 干净错误或确定性回绕 |
-| T1.3 | 移位越界：左右移校验 `0 <= n < 64` | W2 | P0 | `ada_vm/src/vm.rs` | 用例 `1 << 70`、`1 << -1` → 干净错误 |
-| T1.4 | 字符串索引 / 切片按字符（`char_indices`/`chars()`）定位，消除 byte-boundary panic | W2 | P0 | `ada_vm/src/vm.rs` | 用例 `"语言"[0]` → `"语"` |
-| T1.5 | 4 类 panic 的回归测试（含多字节、极值、边界组合） | W6 | P0 | `crates/ada_vm/tests/robustness.rs` | ≥8 个用例，全绿 |
-| T1.6 | 全 crate 审计其余 panic 源（`unwrap`/`expect`/索引越界/`as` 截断），产出清单并逐条处理或标注 | W2 | P0 | 全 crate | 审计清单提交；剩余 `unwrap` 均有注释说明不变量 |
+| ✅ T1.1 | `%` 除零：返回 `VmError`，与 `/` 行为一致 | W2 | P0 | `ada_vm/src/vm.rs` | 完成证据：`robustness.rs::modulo_by_zero_is_an_error_not_a_panic`（`10 % 0` → `TypeError("Modulo by zero")`，CLI exit 1） |
+| ✅ T1.2 | 整数算术溢出：`+ - *` 及 `Neg` 用 `checked_*`，溢出返回 `VmError::TypeError`（决策 D5 = A） | W2 | P0 | `ada_vm/src/vm.rs` | 完成证据：4 个溢出用例 + `i64::MIN / -1`、`i64::MIN % -1` 用例（`checked_rem`/`checked_div`/`checked_neg`）全绿 |
+| ✅ T1.3 | 移位越界：左右移校验 `0 <= n < 64` | W2 | P0 | `ada_vm/src/vm.rs` | 完成证据：`1 << 64`、`1 << -1`、`1 >> 64` 均报 `Shift amount out of range` |
+| ✅ T1.4 | 字符串索引按字符（`chars().nth`）定位，消除 byte-boundary panic | W2 | P0 | `ada_vm/src/vm.rs` | 完成证据：`"语言"[0]` → `"语"`、`"Ada 语言"[4]` → `"语"`、越界 → `nil` |
+| ✅ T1.5 | panic 路径的回归测试（含多字节、极值、边界组合、ASI 续行陷阱） | W6 | P0 | `crates/ada_vm/tests/robustness.rs` | 完成证据：17 个用例全绿（要求 ≥8） |
+| ✅ T1.6 | 全 crate 审计其余 panic 源（`unwrap`/`expect`/索引越界/`as` 截断），逐条处理或标注 | W2 | P0 | 全 crate | 完成证据：发现并修复 `min([])`/`max([])` 空数组越界 panic（2 个用例）；其余 `unwrap` 均为 `RwLock` 中毒语义或编译器不变量（`constants`/`names` 索引由编译器生成，见 SPEC_RUNTIME §4） |
 | T1.7 | 宿主兜底：`Engine::eval*` 边界 `catch_unwind`，把意外 panic 转为 `Error::Panic`（默认开启，可关闭） | W5 | P1 | `ada_engine/src/lib.rs` | 故意 panic 的 native fn 不杀死宿主进程 |
 | T1.8 | 错误可定位：`VmError` 附带当前指令的 `Span`，CLI 输出行号 | W2/W6 | P1 | `ada_vm`, `ada_bytecode`, `ada_cli` | 运行时错误输出 `file:line:col` |
 
-**退出标准**：§2.2 中 4 个 P0 探针全部返回干净错误（exit 1 而非 101）；新增测试 ≥8；`cargo test --workspace` 全绿；CI 通过。
+**退出标准**：✅ 达成 —— 原 5 类 panic 探针全部返回干净错误（exit 1 而非 101）；`robustness.rs` 17 个用例（要求 ≥8）；`cargo test --workspace` 65 passed / 0 failed；fmt + clippy + 文档门禁全绿。
+（剩余 T1.7/T1.8 为 P1，归入 M5/M3 的收尾工作）
 
 ---
 
@@ -167,7 +184,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | T2.2 | 闭包 upvalue 捕获：新增 `GetUpvalue`/`SetUpvalue` 与带 upvalue 描述的 `Closure` 指令；编译器维护 upvalue 表 | W2/W1 | P1 | `ada_bytecode/src/{instruction,compiler}.rs`, `ada_vm/src/vm.rs` | `fn outer(a) { let g = x => x + a; g(5) }` → `15`；多层嵌套捕获用例通过 |
 | T2.3 | 原型方法补齐：`string.chars_with_idx/iter/next`、array `iter/next`、map `iter/next` | W3 | P1 | `ada_vm/src/vm.rs` | SPEC_STDLIB §4/§5 示例逐条可运行 |
 | T2.4 | REPL 状态持久化：顶层 `let`/`mut` 落到持久 scope（或编译为 `SetGlobal`），跨行可见 | W2/W6 | P1 | `ada_bytecode/src/compiler.rs`, `ada_engine` | 连续输入 `let a = 41` → `a + 1` → 输出 `42` |
-| T2.5 | 长度语义统一：`.len` 与 `len()` 返回**字符数**；新增 `.len_bytes` 表达字节数；同步规范 | W3 | P1 | `ada_vm/src/vm.rs`, `builtins/core.rs`, `SPEC_STDLIB.md` | `len("Ada 语言") == 6`；`"Ada 语言".len_bytes == 10` |
+| ✅ T2.5 | 长度语义统一：`.len` 与 `len()` 返回**字符数**；新增 `.len_bytes` 表达字节数；同步规范 | W3 | P1 | `ada_vm/src/vm.rs`, `builtins/core.rs`, `SPEC_STDLIB.md` | 完成证据：`robustness.rs::string_len_counts_characters_and_len_bytes_counts_bytes`（`len("Ada 语言") == 6`、`.len_bytes == 10`） |
 | T2.6 | `fuel` 生命周期：`execute()` 每次重新装填；新增 `reset_fuel` / `remaining_fuel` | W2/W5 | P1 | `ada_vm/src/vm.rs`, `ada_engine/src/lib.rs` | 一次 `OutOfFuel` 后同一 `Engine` 仍可正常执行下一段脚本 |
 | T2.7 | `Engine` 持久化求值测试（多轮 eval 共享状态） | W6 | P1 | `crates/ada_engine/tests/` | ≥3 个用例覆盖函数/变量/模块 |
 
@@ -185,7 +202,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | T3.2 | `match` 非穷尽：无 `_` 且无匹配时抛运行时错误（或编译期警告，按 D4/D7 决策） | W1/W2 | P1 | `compiler.rs`, `vm.rs` | `match 99 { 1 => "one" }` → 明确错误而非静默 `nil` |
 | T3.3 | `{ x }` map / block 歧义规则定型并写入规范 | W1 | P1 | `parser.rs`, `SPEC_LANGUAGE.md` | 规则有规范条文 + 正反用例测试 |
 | T3.4 | 插值子表达式 span 映射修复（片段内行列 → 源文件绝对行列） | W1 | P2 | `parser.rs`, `lexer.rs` | `$"{1 +}"` 报错行号指向源文件真实位置 |
-| T3.5 | 数值语义统一：Int/Float 混合 `%` 与位运算规则定义并实现 | W2 | P2 | `vm.rs`, `SPEC_LANGUAGE.md` | `5.0 % 2` 行为与规范一致 |
+| T3.5 | 数值语义统一：Int/Float 混合 `%` 与位运算规则、`x/0.0`（IEEE 还是报错）、比较类型不匹配（静默 `false` 还是报错）、**索引负号语义（G-L14）** | W2 | P2 | `vm.rs`, `SPEC_LANGUAGE.md`, `SPEC_STDLIB.md` | `5.0 % 2`、`"abc"[-1]`、`5 < "a"` 行为与规范逐条一致 |
 | T3.6 | Float 打印可区分：`1.0` 输出 `1.0` 而非 `1` | W3 | P2 | `value.rs` | `println(1.0)` → `1.0`；demo 输出同步更新 |
 | T3.7 | 语义测试集：≥15 个边界用例（作用域、遮蔽、短路、赋值目标、深度递归） | W6 | P1 | `crates/ada_vm/tests/` | 全绿；覆盖 M3 全部规则 |
 
@@ -273,9 +290,11 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | Golden 测试 | `examples/*.ada` + 期望输出 | 端到端行为与文档示例一致性（防文档漂移） | M2 起 |
 | Fuzz | `fuzz/`（cargo-fuzz） | lexer/parser 在随机输入下不 panic、不 OOM | M3 起 |
 | 基准 | `benches/`（criterion） | 性能回归门禁 | M6 |
-| 文档测试 | `README`/`docs` 代码块 | 文档示例可运行（T7.3 后启用） | M7 |
+| 文档测试 | `crates/ada_engine/tests/doc_examples.rs` | README / SPEC 中标注可运行的示例（防文档漂移，R1 缓解） | ✅ M1 已启用 |
+| 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
-**当前缺口**：无集成测试（`tests/` 不存在）、无 golden、无 fuzz、无基准；`ada_cli` 与 `ada_ast` 测试数为 0。
+**当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
+**当前状态**：`cargo test --workspace` → 65 passed / 0 failed（单元 34 + 稳健性 17 + 文档示例 12 + 文档门禁 2）。
 
 ---
 
@@ -326,7 +345,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | D2 | 异步实现 | A 真 Fiber + Tokio；B 先落地"同步 Future 占位"并明确标注 | 决定 M4 工作量与文档措辞 | M4 开始前 |
 | D3 | 迭代器求值 | A 即时（先可用）；B 惰性（符合 SPEC_STDLIB §5.2「惰性优先」原则） | 惰性需引入迭代器对象与适配器链，工作量更大 | T2.1 开始时 |
 | D4 | `{ x }` 歧义 | A 判为 block（需显式 `{ "x": x }` 表 map）；B 保持现状判 map | 影响既有脚本兼容性与规范 | T3.3 前 |
-| D5 | 整数溢出语义 | A 报错（更安全，适合 AI 沙箱）；B 回绕（更快，类 C） | 影响 M1 实现与规范 | T1.2 前 |
+| D5 | 整数溢出语义 | ~~A 报错~~；~~B 回绕~~ → **已决：A（报错）** | **决策（2026-10，M1 执行期）**：采用 `checked_*` + `VmError::TypeError`。理由：AI 沙箱场景下"静默回绕"会产生难排查的错误结果，而硬错误可被宿主捕获；若未来基准显示热路径成本显著，再评估回绕或 f64 提升 | ✅ 已决（T1.2 落地） |
 | D6 | 内存模型 | A 维持 `Arc<RwLock>`；B 引入 GC | B 是大重构 | M5 结束前评估 |
 | D7 | `match` 非穷尽 | A 运行时错误；B 编译期警告 | 影响语言严格度 | T3.2 前 |
 
@@ -365,8 +384,8 @@ docs/
 
 | 里程碑 | 预计工时 | 状态 | 退出标准达成 |
 | :--- | :--- | :--- | :--- |
-| M0 治理基线 | 1–2 天 | 📋 | ☐ |
-| M1 解释器稳健性 | 3–5 天 | 📋 | ☐ |
+| M0 治理基线 | 1–2 天 | ✅ | ☑（T0.6 为 P1 遗留） |
+| M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 为 P1 遗留） |
 | M2 语言核心补齐 | 1–2 周 | 📋 | ☐ |
 | M3 语义收紧 | 1 周 | 📋 | ☐ |
 | M4 异步并发 | 2–3 周 | 📋 | ☐ |

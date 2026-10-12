@@ -200,14 +200,14 @@ struct Vm {
 
 | 运算 | Int ⊕ Int | Float ⊕ Float | Int ⊕ Float | String 参与 |
 | :--- | :--- | :--- | :--- | :--- |
-| `+` | Int，⚠️ **溢出 panic** | Float | Float | ✅ 任一侧为 String 则字符串拼接（`1 + "a"` → `"1a"`） |
-| `-` `*` | Int，⚠️ **溢出 panic** | Float | Float | ❌ `TypeError` |
-| `/` | 整除则 Int，否则 Float；`/0` → `TypeError` | Float；**`x/0.0` 得 `inf`/`NaN`（不报错）⚠️** | Float | ❌ `TypeError` |
-| `%` | ⚠️ **`%0` panic**；混合类型不支持 | Float | ❌ `TypeError`（`5.0 % 2` 报错）⚠️ | ❌ `TypeError` |
+| `+` | Int，溢出报 `TypeError`（`checked_add`） | Float | Float | ✅ 任一侧为 String 则字符串拼接（`1 + "a"` → `"1a"`） |
+| `-` `*` | Int，溢出报 `TypeError`（`checked_sub` / `checked_mul`） | Float | Float | ❌ `TypeError` |
+| `/` | 整除则 Int，否则 Float；`/0` → `TypeError`；`i64::MIN / -1` → `TypeError`(overflow) | Float；**`x/0.0` 得 `inf`/`NaN`（不报错）⚠️** | Float | ❌ `TypeError` |
+| `%` | `%0` → `TypeError`；`i64::MIN % -1` → `TypeError`(overflow)；混合类型不支持 ⚠️ | Float | ❌ `TypeError`（`5.0 % 2` 报错）⚠️ | ❌ `TypeError` |
 | 比较 `< <= > >=` | bool | bool | bool | 类型不匹配**静默返回 `false`** ⚠️ |
 | 位运算 `& \| ^` | Int | ❌ `TypeError` | ❌ `TypeError` | ❌ `TypeError` |
-| 移位 `<< >>` | Int，⚠️ **越界/负数 panic** | ❌ | ❌ | ❌ |
-| 一元 `-` | Int，⚠️ `-(i64::MIN)` **溢出 panic** | Float | — | ❌ |
+| 移位 `<< >>` | Int；移位量不在 `0..64`（含负数）→ `TypeError` | ❌ | ❌ | ❌ |
+| 一元 `-` | Int；`-(i64::MIN)` → `TypeError`(overflow) | Float | — | ❌ |
 | 一元 `!` | 真值取反 → Bool | 同 | 同 | 同 |
 | 一元 `~` | Int | ❌ | ❌ | ❌ |
 
@@ -215,9 +215,9 @@ struct Vm {
 
 | ID | 问题 | 目标 | 任务 |
 | :--- | :--- | :--- | :--- |
-| G-R8 | 整数溢出导致宿主 panic（debug）/ 静默回绕（release） | 统一为 `checked_*` + `VmError`，或按决策 D5 明确定义回绕并写规范 | T1.2 / D5 |
-| G-R9 | `% 0` panic | 返回 `TypeError`，与 `/` 一致 | T1.1 |
-| G-R10 | 移位越界 panic | 校验 `0 <= n < 64` | T1.3 |
+| G-R8 | 整数溢出导致宿主 panic（debug）/ 静默回绕（release） | ✅ 已修复：`+ - * / %` 与一元 `-` 全部走 `checked_*`，溢出返回 `TypeError`（决策 D5 = A，T1.2） | ✅ T1.2 |
+| G-R9 | `% 0` panic | ✅ 已修复：返回 `TypeError("Modulo by zero")`，与 `/` 一致（T1.1） | ✅ T1.1 |
+| G-R10 | 移位越界 panic | ✅ 已修复：校验 `0 <= n < 64`，否则 `TypeError`（T1.3） | ✅ T1.3 |
 | G-R11 | `x % y` 混合类型不支持 | 提升为 Float 后取模 | T3.5 |
 | G-R12 | `x / 0.0` 静默得 `inf` | 明确定义（保留 IEEE 语义或报错） | T3.5 |
 | G-R13 | 比较类型不匹配静默 `false` | 明确定义（建议报错） | T3.5 |

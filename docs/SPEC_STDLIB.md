@@ -58,7 +58,7 @@
 | 签名 | 行为 | 备注 |
 | :--- | :--- | :--- |
 | `abs(x)` | Int → Int；Float → Float | ⚠️ 非数字返回 `Int(0)`（静默） |
-| `min(a, b, ...)` / `max(a, b, ...)` | 返回最小/最大值；单参数且为数组时作用于数组 | ⚠️ 不可比较的元素（非数字）被跳过；空数组返回 `nil` |
+| `min(a, b, ...)` / `max(a, b, ...)` | 返回最小/最大值；单参数且为数组时作用于数组；空数组返回 `nil` | ✅ 不可比较的元素（非数字）被跳过 |
 | `clamp(x, min, max)` | 夹取；首参为 Int 则返回 Int，否则 Float | ✅ |
 | `round(x)` / `floor(x)` / `ceil(x)` | 返回 **Int** | ⚠️ 非数字返回 `Int(0)` |
 | `math.*` 高级函数 | 见 §3.2 | — |
@@ -67,7 +67,7 @@
 
 | 签名 | 状态 | 行为 |
 | :--- | :--- | :--- |
-| `len(v)` | ⚠️ | Array→元素数、Map→键数、**String→字节数（应为字符数，T2.5）**、其它→0 |
+| `len(v)` | ✅ | Array→元素数、Map→键数、**String→字符数**、其它→0 |
 | `range(start, end, [step])` | ✅ | 返回**惰性** `iterator`；左闭右开；`step` 缺省 1；`range(n)` = `range(0, n)`；`step` 为负时倒序；`step == 0` 产生空迭代 |
 | `push(arr, v)` | ✅ | 就地向数组追加，返回 `nil`；等价 `arr.push(v)` |
 | `sum(arr)` | ✅ | 数值累加（Int 保持 Int，出现 Float 则整体 Float）；⚠️ 非数值元素**静默忽略** |
@@ -135,8 +135,8 @@
 
 | 成员 | 状态 | 行为 |
 | :--- | :--- | :--- |
-| `.len` | ⚠️ | **字节数**（应为字符数，T2.5） |
-| `.len_bytes` | 📋 | 目标 API（T2.5） |
+| `.len` | ✅ | **字符数**（Unicode 标量个数，T2.5） |
+| `.len_bytes` | ✅ | 字节数（UTF-8 编码长度） |
 | `.chars` | ✅ | 返回单字符数组（按 Unicode 字符切分） |
 | `.chars_with_idx` | 📋 | 目标 API（T2.3） |
 | `.lines` | ✅ | 按行切分为数组 |
@@ -301,7 +301,7 @@ engine.register_module(MyToolModule::new());
 | ID | 缺口 | 状态 | 任务 |
 | :--- | :--- | :--- | :--- |
 | G-S1 | 迭代器适配器全族缺失（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`） | 📋 | T2.1 / D3 |
-| G-S2 | `string.len` 与 `len()` 返回字节数 | ⚠️ | T2.5 |
+| G-S2 | `string.len` 与 `len()` 返回字节数 | ✅ 已修复（T2.5）：二者均为字符数，字节数走 `.len_bytes` | ✅ T2.5 |
 | G-S3 | `iterator` 无任何方法，无法链式消费 | 📋 | T2.3 |
 | G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ⚠️ | T4.3 / T4.5 |
 | G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ⚠️ | T5.1 / T5.2 |
