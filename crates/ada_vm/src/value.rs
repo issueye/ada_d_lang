@@ -360,6 +360,28 @@ impl Value {
         }
     }
 
+    /// 类型名（与 `type_of()` 内建返回的字符串一致），用于错误消息。
+    ///
+    /// 例：`abs: expected a number, got string`。集中在这里定义，保证内建函数、
+    /// 宿主错误与 `type_of` 三者口径一致。
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::Bool(_) => "bool",
+            Value::Int(_) => "int",
+            Value::Float(_) => "float",
+            Value::String(_) => "string",
+            Value::Array(_) => "array",
+            Value::Map(_) => "map",
+            Value::Closure(_) | Value::NativeFn(_) | Value::Intrinsic(_) | Value::Async { .. } => {
+                "function"
+            }
+            Value::Cell(_) => "cell",
+            Value::Task(_) => "task",
+            Value::Iterator(_) => "iterator",
+        }
+    }
+
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             Value::Nil => serde_json::Value::Null,

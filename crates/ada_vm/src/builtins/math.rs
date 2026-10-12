@@ -29,6 +29,21 @@ fn next_random_f64() -> f64 {
     (next_random_u64() >> 11) as f64 / (1u64 << 53) as f64
 }
 
+/// 取数值参数：非数值报错（G-S6 口径统一，不再静默按 0 处理）。
+fn number_arg(args: &[Value], who: &str) -> Result<f64, String> {
+    let value = args
+        .first()
+        .ok_or_else(|| format!("{who}: expected a number, got nothing"))?;
+    value
+        .as_float()
+        .ok_or_else(|| format!("{who}: expected a number, got {}", value.type_name()))
+}
+
+/// 一元数学函数（`sqrt`/`log`/`log10`/`sin`/`cos`/`tan`）。
+fn unary_math(args: &[Value], who: &str, op: fn(f64) -> f64) -> Result<Value, String> {
+    Ok(Value::Float(op(number_arg(args, who)?)))
+}
+
 pub fn create_math_module() -> Value {
     let mut module = HashMap::new();
 
@@ -40,10 +55,7 @@ pub fn create_math_module() -> Value {
     // math.sqrt(x)
     module.insert(
         "sqrt".to_string(),
-        Value::native_fn("math.sqrt", |args| {
-            let x = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
-            Ok(Value::Float(x.sqrt()))
-        }),
+        Value::native_fn("math.sqrt", |args| unary_math(args, "math.sqrt", f64::sqrt)),
     );
 
     // math.pow(x, y)
@@ -53,56 +65,58 @@ pub fn create_math_module() -> Value {
             if args.len() < 2 {
                 return Err("math.pow requires (base, exp)".into());
             }
-            let x = args[0].as_float().unwrap_or(0.0);
-            let y = args[1].as_float().unwrap_or(0.0);
-            Ok(Value::Float(x.powf(y)))
+            let base = args[0].as_float().ok_or_else(|| {
+                format!("math.pow: expected a number, got {}", args[0].type_name())
+            })?;
+            let exp = args[1].as_float().ok_or_else(|| {
+                format!("math.pow: expected a number, got {}", args[1].type_name())
+            })?;
+            Ok(Value::Float(base.powf(exp)))
         }),
     );
 
-    // math.log(x)
+    // math.log(x) / math.log10(x)
     module.insert(
         "log".to_string(),
-        Value::native_fn("math.log", |args| {
-            let x = args.first().and_then(|a| a.as_float()).unwrap_or(1.0);
-            Ok(Value::Float(x.ln()))
-        }),
+        Value::native_fn("math.log", |args| unary_math(args, "math.log", f64::ln)),
     );
-
-    // math.log10(x)
     module.insert(
         "log10".to_string(),
         Value::native_fn("math.log10", |args| {
-            let x = args.first().and_then(|a| a.as_float()).unwrap_or(1.0);
-            Ok(Value::Float(x.log10()))
+            unary_math(args, "math.log10", f64::log10)
         }),
     );
 
-    // math.sin(rad)
+    // math.sin/cos/tan(rad)
     module.insert(
         "sin".to_string(),
-        Value::native_fn("math.sin", |args| {
-            let rad = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
-            Ok(Value::Float(rad.sin()))
-        }),
+        Value::native_fn("math.sin", |args| unary_math(args, "math.sin", f64::sin)),
     );
-
-    // math.cos(rad)
     module.insert(
         "cos".to_string(),
-        Value::native_fn("math.cos", |args| {
-            let rad = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
-            Ok(Value::Float(rad.cos()))
-        }),
+        Value::native_fn("math.cos", |args| unary_math(args, "math.cos", f64::cos)),
     );
-
-    // math.tan(rad)
     module.insert(
         "tan".to_string(),
-        Value::native_fn("math.tan", |args| {
-            let rad = args.first().and_then(|a| a.as_float()).unwrap_or(0.0);
-            Ok(Value::Float(rad.tan()))
-        }),
+        Value::native_fn("math.tan", |args| unary_math(args, "math.tan", f64::tan)),
     );
+
+    // G-S7：舍入函数此前只以全局名提供，命名不一致；这里补上 math.* 别名
+    // （全局 `round`/`floor`/`ceil` 仍然保留，不构成破坏性变更）。
+    for (name, op) in [
+        ("round", f64::round as fn(f64) -> f64),
+        ("floor", f64::floor),
+        ("ceil", f64::ceil),
+    ] {
+        let qualified = format!("math.{name}");
+        module.insert(
+            name.to_string(),
+            Value::native_fn(qualified.clone(), move |args| {
+                let number = number_arg(args, &qualified)?;
+                Ok(Value::Int(op(number) as i64))
+            }),
+        );
+    }
 
     // math.random() -> [0.0, 1.0)
     module.insert(

@@ -207,7 +207,14 @@ fn sum_values(items: &[Value]) -> Result<Value, VmError> {
                     float_sum = int_sum as f64 + *f;
                 }
             }
-            _ => {}
+            // G-S6：非数值元素报错，不再静默忽略——静默忽略会让
+            // `sum([1, "2"])` 悄悄得到 1，从而掩盖类型错误。
+            other => {
+                return Err(VmError::TypeError(format!(
+                    "sum: expected numbers, got {}",
+                    other.type_name()
+                )))
+            }
         }
     }
     Ok(if is_float {

@@ -246,6 +246,10 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
 
     // -------------------------------------------------------------
     // 5. Math Functions
+    //
+    // T3.5/G-S6 口径统一：**非数值一律报错**，不再静默返回 0。
+    // 与 M3 对比较运算的收紧一致（`5 < "a"` 报错而不是静默 false）——
+    // 静默 0 恰好会掩盖 AI 生成代码里的类型错误。
     // -------------------------------------------------------------
     globals.insert(
         "abs".to_string(),
@@ -255,71 +259,19 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
                 .map(Value::Int)
                 .ok_or_else(|| "abs: integer overflow (i64::MIN)".to_string()),
             Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
-            _ => Ok(Value::Int(0)),
+            Some(other) => Err(number_error("abs", other)),
+            None => Err("abs: expected a number, got nothing".to_string()),
         }),
     );
 
     globals.insert(
         "min".to_string(),
-        Value::native_fn("min", |args| {
-            if args.is_empty() {
-                return Ok(Value::Nil);
-            }
-            // Support passing array as single argument: min([1, 2, 3])
-            let items: Vec<Value> = if args.len() == 1 {
-                if let Value::Array(arr) = &args[0] {
-                    arr.read().unwrap().clone()
-                } else {
-                    return Ok(args[0].clone());
-                }
-            } else {
-                args.to_vec()
-            };
-
-            if items.is_empty() {
-                return Ok(Value::Nil);
-            }
-            let mut min_val = items[0].clone();
-            for it in items.iter().skip(1) {
-                if let (Some(a), Some(b)) = (it.as_float(), min_val.as_float()) {
-                    if a < b {
-                        min_val = it.clone();
-                    }
-                }
-            }
-            Ok(min_val)
-        }),
+        Value::native_fn("min", |args| extremum(args, "min", true)),
     );
 
     globals.insert(
         "max".to_string(),
-        Value::native_fn("max", |args| {
-            if args.is_empty() {
-                return Ok(Value::Nil);
-            }
-            let items: Vec<Value> = if args.len() == 1 {
-                if let Value::Array(arr) = &args[0] {
-                    arr.read().unwrap().clone()
-                } else {
-                    return Ok(args[0].clone());
-                }
-            } else {
-                args.to_vec()
-            };
-
-            if items.is_empty() {
-                return Ok(Value::Nil);
-            }
-            let mut max_val = items[0].clone();
-            for it in items.iter().skip(1) {
-                if let (Some(a), Some(b)) = (it.as_float(), max_val.as_float()) {
-                    if a > b {
-                        max_val = it.clone();
-                    }
-                }
-            }
-            Ok(max_val)
-        }),
+        Value::native_fn("max", |args| extremum(args, "max", false)),
     );
 
     globals.insert(
@@ -343,38 +295,17 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
 
     globals.insert(
         "round".to_string(),
-        Value::native_fn("round", |args| {
-            if let Some(arg) = args.first() {
-                if let Some(f) = arg.as_float() {
-                    return Ok(Value::Int(f.round() as i64));
-                }
-            }
-            Ok(Value::Int(0))
-        }),
+        Value::native_fn("round", |args| round_like(args, "round", f64::round)),
     );
 
     globals.insert(
         "floor".to_string(),
-        Value::native_fn("floor", |args| {
-            if let Some(arg) = args.first() {
-                if let Some(f) = arg.as_float() {
-                    return Ok(Value::Int(f.floor() as i64));
-                }
-            }
-            Ok(Value::Int(0))
-        }),
+        Value::native_fn("floor", |args| round_like(args, "floor", f64::floor)),
     );
 
     globals.insert(
         "ceil".to_string(),
-        Value::native_fn("ceil", |args| {
-            if let Some(arg) = args.first() {
-                if let Some(f) = arg.as_float() {
-                    return Ok(Value::Int(f.ceil() as i64));
-                }
-            }
-            Ok(Value::Int(0))
-        }),
+        Value::native_fn("ceil", |args| round_like(args, "ceil", f64::ceil)),
     );
 
     // -------------------------------------------------------------
@@ -471,4 +402,58 @@ pub fn register_iterator_adapters(globals: &mut HashMap<String, Value>) {
     for kind in AdapterKind::all() {
         globals.insert(kind.name().to_string(), Value::intrinsic(*kind));
     }
+}
+
+// ---------------------------------------------------------------- 数值参数校验（G-S6）
+
+/// 非数值参数的错误消息：`abs: expected a number, got string`。
+fn number_error(who: &str, value: &Value) -> String {
+    format!("{who}: expected a number, got {}", value.type_name())
+}
+
+/// `round` / `floor` / `ceil` 的共同实现：非数值报错（G-S6）。
+fn round_like(args: &[Value], who: &str, op: fn(f64) -> f64) -> Result<Value, String> {
+    let value = args
+        .first()
+        .ok_or_else(|| format!("{who}: expected a number, got nothing"))?;
+    let number = value.as_float().ok_or_else(|| number_error(who, value))?;
+    Ok(Value::Int(op(number) as i64))
+}
+
+/// `min` / `max` 的共同实现（G-S6：非数值元素报错，不再静默跳过）。
+///
+/// 既支持 `min([1, 2, 3])`（单数组参数），也支持 `min(1, 2, 3)`。
+fn extremum(args: &[Value], who: &str, want_min: bool) -> Result<Value, String> {
+    if args.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let items: Vec<Value> = match (args.len(), &args[0]) {
+        (1, Value::Array(arr)) => arr
+            .read()
+            .map_err(|_| format!("{who}: poisoned array"))?
+            .clone(),
+        (1, other) => return Ok(other.clone()),
+        _ => args.to_vec(),
+    };
+    if items.is_empty() {
+        return Ok(Value::Nil);
+    }
+
+    let mut best = items[0].clone();
+    let mut best_number = best.as_float().ok_or_else(|| number_error(who, &best))?;
+    for candidate in items.iter().skip(1) {
+        let number = candidate
+            .as_float()
+            .ok_or_else(|| number_error(who, candidate))?;
+        let better = if want_min {
+            number < best_number
+        } else {
+            number > best_number
+        };
+        if better {
+            best = candidate.clone();
+            best_number = number;
+        }
+    }
+    Ok(best)
 }
