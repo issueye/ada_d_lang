@@ -34,3 +34,32 @@ jobs:
       # （crates/ada_cli/tests/doc_links.rs，见开发计划 T0.4 / §11）
       - name: Tests (cargo test --workspace)
         run: cargo test --workspace
+
+  benchmarks:
+    name: Benchmarks (T6.1 / T6.5)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: benches
+
+      # 指令数门禁（确定性、零抖动）：基准程序的"工作量"劣化 >5% 即失败
+      # 由 crates/ada_vm/tests/perf_budget.rs 实现，已包含在 quality-gates 的
+      # `cargo test --workspace` 中；这里显式再跑一次，便于在日志里定位。
+      - name: Instruction-count regression gate
+        run: cargo test -p ada_vm --test perf_budget -- --nocapture
+
+      # 墙钟基准只做纵向对比（共享 runner 抖动大），因此编译 + 出数并存档，不设阈值。
+      - name: Build benchmarks
+        run: cargo bench --manifest-path benches/Cargo.toml --no-run
+
+      - name: Run benchmarks (wall-clock, informational)
+        run: cargo bench --manifest-path benches/Cargo.toml -- --warm-up-time 1 --measurement-time 2
+

@@ -1,0 +1,26 @@
+[package]
+name = "ada_bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 独立于主工作区：`cargo test --workspace` 不会因此编译 criterion。
+[workspace]
+
+[dependencies]
+ada_bytecode = { path = "../crates/ada_bytecode" }
+ada_parser = { path = "../crates/ada_parser" }
+ada_vm = { path = "../crates/ada_vm" }
+
+[dev-dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "ada"
+harness = false
+
+[profile.bench]
+debug = true
+
+[profile.release]
+debug = true
