@@ -97,36 +97,42 @@ fn dispatch(cli: &Cli, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Erro
     }
 }
 
-/// 把错误渲染成稳定的、面向用户与工具的单行格式（T0.6）。
+/// 把错误渲染成稳定的、面向用户与工具的单行格式（T0.6 / T1.8）。
 ///
-/// - 词法/语法错误带 `line:col`（`ParseError::position`）；
-/// - 编译/运行时错误当前**没有** span（T1.8 待补），因此只给文件名与消息；
-///   格式保持 `file: error: <消息>`，工具可按 `:` 切分而不必区分是否带位置。
+/// - 有位置时 `file:line:col: error: <消息>`；无位置时 `file: error: <消息>`；
+/// - 消息用 `Display`（人话）而非 `Debug`；
+/// - 词法/语法错误保留 `expected` 细节。
 fn render_error(source_name: &str, err: &(dyn std::error::Error + 'static)) -> String {
+    // 求值入口（带位置，T1.8）
+    if let Some(failure) = err.downcast_ref::<ada_engine::EvalFailure>() {
+        let detail = render_detail(&failure.error);
+        return match failure.position {
+            Some(pos) => format!("{source_name}:{}:{}: error: {detail}", pos.line, pos.col),
+            None => format!("{source_name}: error: {detail}"),
+        };
+    }
+    // 其他路径（反汇编、文件读取等）：直接返回的引擎错误
     if let Some(engine_err) = err.downcast_ref::<ada_engine::Error>() {
-        match engine_err {
-            ada_engine::Error::Parse(parse_err) => {
-                let (line, col) = parse_err.position();
-                return format!(
-                    "{source_name}:{line}:{col}: error: {}",
-                    parse_message(parse_err)
-                );
-            }
-            ada_engine::Error::Compile(e) => {
-                return format!("{source_name}: error: {e}");
-            }
-            ada_engine::Error::Vm(e) => {
-                return format!("{source_name}: error: {e}");
-            }
-            ada_engine::Error::Conversion(msg) => {
-                return format!("{source_name}: error: {msg}");
-            }
-            ada_engine::Error::ModuleConflict(name) => {
-                return format!("{source_name}: error: module '{name}' is already registered");
-            }
-        }
+        let detail = render_detail(engine_err);
+        return match engine_err.position() {
+            Some(pos) => format!("{source_name}:{}:{}: error: {detail}", pos.line, pos.col),
+            None => format!("{source_name}: error: {detail}"),
+        };
     }
     format!("{source_name}: error: {err}")
+}
+
+/// 错误种类 → 一行消息（不含位置，位置由调用方作为前缀给出）。
+fn render_detail(err: &ada_engine::Error) -> String {
+    match err {
+        ada_engine::Error::Parse(parse_err) => parse_message(parse_err),
+        ada_engine::Error::Compile(compile_err) => compile_err.to_string(),
+        ada_engine::Error::Vm(vm_err) => vm_err.to_string(),
+        ada_engine::Error::Conversion(msg) => msg.clone(),
+        ada_engine::Error::ModuleConflict(name) => {
+            format!("module '{name}' is already registered")
+        }
+    }
 }
 
 /// 语法错误的一行人话（位置由前缀给出，因此从消息里去掉 "at line …"）。
@@ -161,7 +167,8 @@ fn run_file(path: &PathBuf, sandbox: &Sandbox) -> Result<(), Box<dyn std::error:
 
 fn run_code(source: &str, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = Engine::with_sandbox(sandbox.clone());
-    let val = engine.eval_value(source)?;
+    // T1.8：用带位置的求值入口，运行时错误也能给出 line:col
+    let val = engine.eval_diagnostic(source)?;
     if !val.is_nil() {
         println!("{val}");
     }

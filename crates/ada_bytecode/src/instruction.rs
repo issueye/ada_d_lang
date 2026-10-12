@@ -365,4 +365,12 @@ impl FunctionProto {
         self.spans.push(span);
         self.instructions.len() - 1
     }
+
+    /// 第 `ip` 条指令的源码位置（T1.8：VM 报错时定位）。
+    ///
+    /// `spans` 与 `instructions` 由 [`FunctionProto::emit`] 同步维护；
+    /// 手工拼装 proto（测试/工具）可能不填 spans，因此返回 `Option`。
+    pub fn span_at(&self, ip: usize) -> Option<Span> {
+        self.spans.get(ip).copied()
+    }
 }

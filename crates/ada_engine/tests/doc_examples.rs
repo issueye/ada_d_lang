@@ -89,6 +89,28 @@ fn readme_embedding_sandbox_and_module_example() {
 }
 
 #[test]
+fn spec_runtime_diagnostics_example() {
+    // SPEC_RUNTIME §9.2（T1.8）：诊断 API 的行为必须与文档一致
+    use ada_engine::{Engine, Position};
+
+    let mut engine = Engine::new();
+    let failure = engine
+        .eval_diagnostic("let a = 1\nlet b = 1 / 0")
+        .expect_err("division by zero should fail");
+    assert_eq!(
+        failure.position,
+        Some(Position { line: 2, col: 9 }),
+        "position should point at the `1 / 0` expression on line 2"
+    );
+    assert!(
+        failure.error.to_string().contains("Division by zero"),
+        "error kind is preserved: {failure}"
+    );
+    // Display 形如 "2:9: <消息>"，便于直接在日志/编辑器里使用
+    assert!(failure.to_string().starts_with("2:9: "));
+}
+
+#[test]
 fn spec_runtime_tax_example() {
     use ada_engine::Value;
 

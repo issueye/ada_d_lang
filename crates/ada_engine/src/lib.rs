@@ -28,6 +28,72 @@ pub enum Error {
     ModuleConflict(String),
 }
 
+impl Error {
+    /// 错误位置（T1.8）：词法/语法错误自带 `line:col`，编译错误自带 `Span`；
+    /// 运行时错误的位置由 [`Engine::eval_diagnostic`] 通过 [`EvalFailure`] 附带
+    /// （`Error` 本身不持有 VM 状态）。
+    pub fn position(&self) -> Option<Position> {
+        match self {
+            Error::Parse(parse_err) => {
+                let (line, col) = parse_err.position();
+                Some(Position { line, col })
+            }
+            Error::Compile(compile_err) => compile_err.span().map(Position::from_span),
+            Error::Vm(_) | Error::Conversion(_) | Error::ModuleConflict(_) => None,
+        }
+    }
+}
+
+/// 源码位置（行/列，均从 1 开始）——CLI 的 `file:line:col` 与将来 LSP 诊断共用（T1.8/T7.2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    pub line: usize,
+    pub col: usize,
+}
+
+impl Position {
+    pub fn from_span(span: ada_ast::Span) -> Self {
+        Self {
+            line: span.line,
+            col: span.col,
+        }
+    }
+}
+
+/// 求值失败：原因 + 位置（T1.8）。
+///
+/// 与 `Error` 的关系：`Error` 是错误**种类**（可由宿主自行匹配），
+/// `EvalFailure` 是"某次求值**在哪里**失败了"这一信息，因此只在 `Engine` 边界产生。
+#[derive(Debug)]
+pub struct EvalFailure {
+    /// 底层错误（保留类型信息，宿主可继续匹配）
+    pub error: Error,
+    /// 失败位置；无位置可归因时为 `None`
+    pub position: Option<Position>,
+}
+
+impl EvalFailure {
+    /// 便于 CLI/日志直接打印的人话消息。
+    pub fn message(&self) -> String {
+        self.error.to_string()
+    }
+}
+
+impl std::fmt::Display for EvalFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.position {
+            Some(pos) => write!(f, "{}:{}: {}", pos.line, pos.col, self.error),
+            None => write!(f, "{}", self.error),
+        }
+    }
+}
+
+impl std::error::Error for EvalFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 /// 宿主自定义原生模块（M5 / T5.5）。
 ///
 /// 实现后通过 [`Engine::register_module`] 注册；脚本侧表现为一个 `map` 值，
@@ -198,11 +264,54 @@ impl Engine {
     }
 
     pub fn eval_value(&mut self, source: &str) -> Result<Value, Error> {
-        let mut parser = Parser::from_source(source)?;
-        let program = parser.parse_program()?;
-        let proto = Compiler::compile_program(&program)?;
-        let val = self.vm.execute(proto)?;
-        Ok(val)
+        self.eval_diagnostic(source)
+            .map_err(|failure| failure.error)
+    }
+
+    /// 求值并在失败时附带**位置**（T1.8）。
+    ///
+    /// 这是 CLI 与将来 LSP 使用的入口：解析/编译错误的位置来自
+    /// `ParseError::position` / `CompileError::span`，运行时错误来自 VM 记录的
+    /// "失败指令"位置。
+    ///
+    /// ```
+    /// # use ada_engine::Engine;
+    /// let mut engine = Engine::new();
+    /// // 第 2 行触发运行时错误（除零），位置应指向该行的 `1 / 0`
+    /// let failure = engine.eval_diagnostic("let a = 1\nlet b = 1 / 0").unwrap_err();
+    /// assert_eq!(failure.position.map(|p| p.line), Some(2));
+    /// ```
+    pub fn eval_diagnostic(&mut self, source: &str) -> Result<Value, EvalFailure> {
+        let parsed = Parser::from_source(source).and_then(|mut parser| parser.parse_program());
+        let program = match parsed {
+            Ok(program) => program,
+            Err(err) => {
+                let (line, col) = err.position();
+                return Err(EvalFailure {
+                    error: Error::Parse(err),
+                    position: Some(Position { line, col }),
+                });
+            }
+        };
+        let proto = match Compiler::compile_program(&program) {
+            Ok(proto) => proto,
+            Err(err) => {
+                return Err(EvalFailure {
+                    position: err.span().map(Position::from_span),
+                    error: Error::Compile(err),
+                });
+            }
+        };
+        match self.vm.execute(proto) {
+            Ok(val) => Ok(val),
+            Err(err) => {
+                let position = self.vm.last_error_span().map(Position::from_span);
+                Err(EvalFailure {
+                    error: Error::Vm(err),
+                    position,
+                })
+            }
+        }
     }
 
     pub fn eval<T: FromValue>(&mut self, source: &str) -> Result<T, Error> {

@@ -4,6 +4,7 @@ use crate::task::{
     MAIN_TASK,
 };
 use crate::value::{AdapterKind, AsyncKind, Closure, IteratorState, Value};
+use ada_ast::Span;
 use ada_bytecode::{Constant, FunctionProto, Instruction};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -64,10 +65,28 @@ pub enum VmError {
     /// 超出并发任务数上限（M5 / T5.3）。
     #[error("Task limit exceeded: at most {limit} tasks may be alive at once")]
     TaskLimitExceeded { limit: usize },
+
+    /// 宿主代码（原生回调/自定义模块）panic（T1.7）。
+    ///
+    /// 库不会让宿主 panic 穿透到调用方：`Vm::execute` 捕获它并转成普通错误。
+    /// 宿主应在收到该错误后**丢弃并重建** `Engine`/`Vm`（panic 可能已污染内部锁）。
+    #[error("Host function panicked: {message}")]
+    HostPanic { message: String },
 }
 
 /// 每个 `Value` 元素的近似内存开销（容器/迭代器物化按此计费）。
 const VALUE_BYTES: usize = std::mem::size_of::<Value>();
+
+/// 从 panic 载荷里取出可读消息（T1.7）。
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
+}
 /// 每个任务的近似开销（`TaskCell` + 现场结构，不含其寄存器窗口）。
 const TASK_BYTES: usize = 512;
 /// 每多少条指令检查一次墙钟预算（子毫秒粒度，避免每次指令都取时钟）。
@@ -242,6 +261,10 @@ pub struct Vm {
     count_instructions: bool,
     /// 本次执行已执行的指令数
     instructions_executed: u64,
+    /// 最近一次失败的源码位置（T1.8；仅在失败时写入，热路径无开销）
+    last_error_span: Option<Span>,
+    /// 最近一个失败任务**自己**的位置（T1.8）：`await` 报错时优先用它
+    last_failed_task_span: Option<Span>,
 }
 
 impl Default for Vm {
@@ -279,6 +302,8 @@ impl Vm {
             metering: false,
             count_instructions: false,
             instructions_executed: 0,
+            last_error_span: None,
+            last_failed_task_span: None,
         };
         vm.apply_sandbox();
         vm
@@ -293,6 +318,36 @@ impl Vm {
     /// 本次执行已执行的指令数（需先开启计数）。
     pub fn instructions_executed(&self) -> u64 {
         self.instructions_executed
+    }
+
+    /// 最近一次执行失败时的源码位置（T1.8）。
+    ///
+    /// 由 [`Vm::execute`] 在失败时记录：取"出错时正在执行的那条指令"的 span。
+    /// 成功执行或任务被取消等无位置可归因的情况返回 `None`。
+    pub fn last_error_span(&self) -> Option<Span> {
+        self.last_error_span
+    }
+
+    /// 当前帧"刚刚执行过的那条指令"的位置（T1.8）。
+    ///
+    /// 循环在派发前已把 `ip` 自增（`ip + 1`），所以失败指令的下标是 `ip - 1`。
+    fn current_span(&self) -> Option<Span> {
+        let frame = self.frames.last()?;
+        let ip = frame.ip.checked_sub(1)?;
+        frame.proto.span_at(ip)
+    }
+
+    /// 把最终错误归属到正确的源码位置（T1.8）。
+    ///
+    /// - `TaskFailed`：用失败任务**自己**的位置（`await` 那一行不是真正的失败点）
+    /// - 其余错误：沿用 `drive_current` 记录的"失败指令"位置
+    fn attribute_error_span(&mut self, outcome: Result<Value, VmError>) -> Result<Value, VmError> {
+        if matches!(outcome, Err(VmError::TaskFailed { .. })) {
+            if let Some(span) = self.last_failed_task_span {
+                self.last_error_span = Some(span);
+            }
+        }
+        outcome
     }
 
     fn refresh_metering(&mut self) {
@@ -445,10 +500,23 @@ impl Vm {
         self.exec_started = std::time::Instant::now();
         self.steps_since_clock_check = 0;
         self.instructions_executed = 0;
+        self.last_error_span = None;
+        self.last_failed_task_span = None;
         self.refresh_metering();
 
-        let outcome = self.drive_current();
-        self.run_scheduler(SchedulerGoal::MainDone, None, Some(outcome))
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let outcome = self.drive_current();
+            self.run_scheduler(SchedulerGoal::MainDone, None, Some(outcome))
+        }))
+        .unwrap_or_else(|payload| {
+            // T1.7：panic 展开不会清空 `self.frames`，因此这里仍能补记失败指令位置
+            // （`drive_current` 的错误分支被展开绕过了）。
+            self.last_error_span = self.current_span();
+            Err(VmError::HostPanic {
+                message: panic_message(payload),
+            })
+        });
+        self.attribute_error_span(outcome)
     }
 
     /// 以给定实参调用任意可调用值（T2.1）。
@@ -844,7 +912,12 @@ impl Vm {
         let id = self.current_task;
         match self.run_loop_until_exit(0) {
             Ok(LoopExit::Return(value)) => self.finish_current(id, Ok(value)),
-            Err(err) => self.finish_current(id, Err(err)),
+            Err(err) => {
+                // T1.8：此刻帧栈与 ip 仍然完好（`finish_current` 会清空它们），
+                // 先记下失败位置，再交给调用方。
+                self.last_error_span = self.current_span();
+                self.finish_current(id, Err(err))
+            }
             Ok(LoopExit::Suspended(reason)) => {
                 let execution = SavedExecution {
                     frames: std::mem::take(&mut self.frames),
@@ -941,9 +1014,19 @@ impl Vm {
     /// 结算任务并把等待它的现场放回就绪队列。
     fn settle_task(&mut self, id: TaskId, result: Result<Value, VmError>) {
         let seq = self.scheduler.next_seq();
+        // T1.8：任务失败时把它**自己**的位置跟着结果一起保存；之后 `await` 报错
+        // 应指向任务内部，而不是 await 那一行。
+        let error_span = if result.is_err() {
+            self.last_error_span
+        } else {
+            None
+        };
+        if error_span.is_some() {
+            self.last_failed_task_span = error_span;
+        }
         if let Some(cell) = self.scheduler.cell(id) {
             if !cell.state().is_settled() {
-                cell.settle(result, seq);
+                cell.settle(result, seq, error_span);
             }
         }
         for waiter in self.scheduler.take_waiters(id) {

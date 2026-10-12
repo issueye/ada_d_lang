@@ -86,21 +86,21 @@ fn file_errors_use_the_file_name_as_the_source() {
 
 #[test]
 fn compile_and_runtime_errors_use_the_display_message() {
-    // 编译期：`let` 不可变
+    // 编译期：`let` 不可变（T1.8：编译错误自带 Span，因此有行列）
     let (ok, _, stderr) = run(&["-e", "let a = 1\na = 2"]);
     assert!(!ok);
     let line = assert_single_line_error(&stderr);
     assert_eq!(
         line,
-        "<eval>: error: Cannot assign to immutable variable 'a' (declare it with `mut`)"
+        "<eval>:2:1: error: Cannot assign to immutable variable 'a' (declare it with `mut`)"
     );
 
-    // 运行时：非穷尽 match
+    // 运行时：非穷尽 match（T1.8：运行时错误指向失败指令）
     let (ok, _, stderr) = run(&["-e", "match 99 { 1 => \"one\" }"]);
     assert!(!ok);
     let line = assert_single_line_error(&stderr);
     assert!(
-        line.starts_with("<eval>: error: No `match` arm matched"),
+        line.starts_with("<eval>:1:1: error: No `match` arm matched"),
         "unexpected format: {line}"
     );
 
@@ -110,8 +110,40 @@ fn compile_and_runtime_errors_use_the_display_message() {
     let line = assert_single_line_error(&stderr);
     assert_eq!(
         line,
-        "<eval>: error: Capability 'time' is not available in the 'strict' sandbox profile"
+        "<eval>:1:1: error: Capability 'time' is not available in the 'strict' sandbox profile"
     );
+}
+
+#[test]
+fn runtime_errors_point_at_the_failing_instruction() {
+    // 多行脚本：错误在第 3 行第 9 列（`1 / 0`）
+    let source = "let a = 1\nlet b = 2\nlet c = 1 / 0\nc";
+    let (ok, _, stderr) = run(&["-e", source]);
+    assert!(!ok);
+    let line = assert_single_line_error(&stderr);
+    assert_eq!(line, "<eval>:3:9: error: Type error: Division by zero");
+
+    // 函数体内失败：位置指向函数内真正出错的那一行
+    let source = "fn bad(n) {\n    if n < 0 { return 0 }\n    n + \"x\".to_int()\n}\nbad(-1)";
+    let (ok, _, stderr) = run(&["-e", source]);
+    assert!(ok, "control: this program should succeed: {stderr}");
+
+    let source = "fn boom(n) {\n    match n {\n        1 => 1\n    }\n}\nboom(2)";
+    let (ok, _, stderr) = run(&["-e", source]);
+    assert!(!ok);
+    let line = assert_single_line_error(&stderr);
+    assert!(
+        line.starts_with("<eval>:2:5: error:") || line.starts_with("<eval>:3:9: error:"),
+        "runtime error inside a function should point into the function body: {line}"
+    );
+}
+
+#[test]
+fn undefined_globals_report_their_position() {
+    let (ok, _, stderr) = run(&["-e", "let a = 1\nnope"]);
+    assert!(!ok);
+    let line = assert_single_line_error(&stderr);
+    assert_eq!(line, "<eval>:2:1: error: Undefined global variable 'nope'");
 }
 
 #[test]

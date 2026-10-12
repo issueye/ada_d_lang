@@ -11,6 +11,7 @@
 
 use crate::value::Value;
 use crate::vm::{CallFrame, VmError};
+use ada_ast::Span;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 
@@ -73,6 +74,9 @@ pub struct TaskInner {
     pub call: Option<(Value, Vec<Value>)>,
     /// 终态结果：`Done` → `Ok`，`Failed` → 原始错误，`Cancelled` → `TaskCancelled`
     pub result: Option<Result<Value, VmError>>,
+    /// 任务失败时的源码位置（T1.8）：另一次 `await` 拿到该错误时用它定位，
+    /// 而不是把错误归到 await 那一行。
+    pub error_span: Option<Span>,
     /// 结算序号：`await_any` 用它判定"谁先完成"（0 表示尚未结算）
     pub settled_seq: u64,
 }
@@ -86,6 +90,7 @@ impl TaskCell {
                 state: TaskState::Pending,
                 call: Some((callee, args)),
                 result: None,
+                error_span: None,
                 settled_seq: 0,
             }),
         }
@@ -100,6 +105,7 @@ impl TaskCell {
                 state: TaskState::Done,
                 call: None,
                 result: Some(Ok(value)),
+                error_span: None,
                 settled_seq: 0,
             }),
         }
@@ -139,7 +145,9 @@ impl TaskCell {
     }
 
     /// 结算任务；`seq` 由调度器单调递增，用于 `await_any`。
-    pub fn settle(&self, result: Result<Value, VmError>, seq: u64) {
+    ///
+    /// `error_span` 是该任务失败时的源码位置（T1.8）；成功或无法归因时为 `None`。
+    pub fn settle(&self, result: Result<Value, VmError>, seq: u64, error_span: Option<Span>) {
         let mut inner = self.inner.write().unwrap();
         inner.state = if result.is_ok() {
             TaskState::Done
@@ -147,6 +155,7 @@ impl TaskCell {
             TaskState::Failed
         };
         inner.result = Some(result);
+        inner.error_span = error_span;
         inner.settled_seq = seq;
         inner.call = None;
     }

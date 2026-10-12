@@ -47,7 +47,7 @@ fn expect_type_error(source: &str, needle: &str) {
 #[test]
 fn plain_assignment_to_a_let_binding_is_rejected() {
     match compile_err("let a = 1\na = 2") {
-        CompileError::AssignToImmutable(name) => assert_eq!(name, "a"),
+        CompileError::AssignToImmutable { name, .. } => assert_eq!(name, "a"),
         other => panic!("expected AssignToImmutable, got {other:?}"),
     }
 }
@@ -55,7 +55,7 @@ fn plain_assignment_to_a_let_binding_is_rejected() {
 #[test]
 fn compound_assignment_to_a_let_binding_is_rejected() {
     match compile_err("let a = 1\na += 1") {
-        CompileError::AssignToImmutable(name) => assert_eq!(name, "a"),
+        CompileError::AssignToImmutable { name, .. } => assert_eq!(name, "a"),
         other => panic!("expected AssignToImmutable, got {other:?}"),
     }
 }
@@ -83,7 +83,7 @@ fn parameters_loop_variables_and_match_bindings_are_assignable() {
 #[test]
 fn immutable_capture_cannot_be_written_from_a_closure() {
     match compile_err("let n = 1\nlet f = () => { n += 1 }\nf()") {
-        CompileError::AssignToImmutable(name) => assert_eq!(name, "n"),
+        CompileError::AssignToImmutable { name, .. } => assert_eq!(name, "n"),
         other => panic!("expected AssignToImmutable, got {other:?}"),
     }
 }

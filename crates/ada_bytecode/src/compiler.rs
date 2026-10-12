@@ -5,14 +5,29 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
-    #[error("Variable '{0}' not found")]
-    VariableNotFound(String),
+    #[error("Variable '{name}' not found")]
+    VariableNotFound { name: String, span: Span },
     #[error("Too many registers in function")]
     TooManyRegisters,
     #[error("Invalid assignment target")]
-    InvalidAssignmentTarget,
-    #[error("Cannot assign to immutable variable '{0}' (declare it with `mut`)")]
-    AssignToImmutable(String),
+    InvalidAssignmentTarget { span: Span },
+    #[error("Cannot assign to immutable variable '{name}' (declare it with `mut`)")]
+    AssignToImmutable { name: String, span: Span },
+}
+
+impl CompileError {
+    /// 出错位置（T1.8）。
+    ///
+    /// `TooManyRegisters` 是寄存器分配的内部上限，产生点没有可归属的用户表达式，
+    /// 因此返回 `None`；其余三种都能给出行列。
+    pub fn span(&self) -> Option<Span> {
+        match self {
+            CompileError::VariableNotFound { span, .. }
+            | CompileError::InvalidAssignmentTarget { span }
+            | CompileError::AssignToImmutable { span, .. } => Some(*span),
+            CompileError::TooManyRegisters => None,
+        }
+    }
 }
 
 struct Local {
@@ -118,23 +133,33 @@ impl Compiler {
     ///
     /// - 命中本层已装箱局部变量 → `ParentLocal`
     /// - 否则通过 `resolve_upvalue` 在本层物化该捕获（可能继续向上传递）→ `ParentUpvalue`
-    fn resolve_capture_source(&mut self, name: &str) -> Result<UpvalueDesc, CompileError> {
+    ///
+    /// `span` 用于错误定位（T1.8）：捕获名解析失败时指向引用它的表达式。
+    fn resolve_capture_source(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Result<UpvalueDesc, CompileError> {
         if let Some((reg, _, _)) = self.resolve_local(name) {
             return Ok(UpvalueDesc::ParentLocal(reg.0));
         }
         self.resolve_upvalue(name)
             .map(UpvalueDesc::ParentUpvalue)
-            .ok_or_else(|| CompileError::VariableNotFound(name.to_string()))
+            .ok_or_else(|| CompileError::VariableNotFound {
+                name: name.to_string(),
+                span,
+            })
     }
 
     /// 子函数编译完成后，把它的 upvalue 名字列表解析成捕获描述符（顺序一致）。
     fn resolve_child_upvalues(
         &mut self,
         names: &[String],
+        span: Span,
     ) -> Result<Vec<UpvalueDesc>, CompileError> {
         let mut descriptors = Vec::with_capacity(names.len());
         for name in names {
-            descriptors.push(self.resolve_capture_source(name)?);
+            descriptors.push(self.resolve_capture_source(name, span)?);
         }
         Ok(descriptors)
     }
@@ -210,7 +235,7 @@ impl Compiler {
             AssignOp::MulAssign => Instruction::Mul { dst, lhs, rhs },
             AssignOp::DivAssign => Instruction::Div { dst, lhs, rhs },
             AssignOp::ModAssign => Instruction::Mod { dst, lhs, rhs },
-            AssignOp::Assign => return Err(CompileError::InvalidAssignmentTarget),
+            AssignOp::Assign => return Err(CompileError::InvalidAssignmentTarget { span }),
         };
         self.proto.emit(inst, span);
         Ok(())
@@ -406,7 +431,7 @@ impl Compiler {
                 child.proto.register_count = child.max_reg;
 
                 let proto_idx = self.proto.child_protos.len() as u32;
-                let upvalues = self.resolve_child_upvalues(&child.upvalue_names)?;
+                let upvalues = self.resolve_child_upvalues(&child.upvalue_names, *span)?;
                 let mut child_proto = child.proto;
                 child_proto.upvalues = upvalues.clone();
                 self.proto.child_protos.push(child_proto);
@@ -969,7 +994,10 @@ impl Compiler {
                         if let Some((local_reg, boxed, is_mut)) = self.resolve_local(name) {
                             // T3.1：`let`（非 mut）绑定不可重新赋值
                             if !is_mut {
-                                return Err(CompileError::AssignToImmutable(name.clone()));
+                                return Err(CompileError::AssignToImmutable {
+                                    name: name.clone(),
+                                    span,
+                                });
                             }
                             if boxed {
                                 self.emit_boxed_assign(local_reg, *op, val_reg, dst, span)?;
@@ -1001,7 +1029,10 @@ impl Compiler {
                         } else if let Some(idx) = self.resolve_upvalue(name) {
                             // T3.1：捕获来的不可变绑定同样不可写
                             if !self.upvalue_mutable[idx as usize] {
-                                return Err(CompileError::AssignToImmutable(name.clone()));
+                                return Err(CompileError::AssignToImmutable {
+                                    name: name.clone(),
+                                    span,
+                                });
                             }
                             match op {
                                 AssignOp::Assign => {
@@ -1068,7 +1099,7 @@ impl Compiler {
                         self.free_reg(i_reg);
                         self.free_reg(t_reg);
                     }
-                    _ => return Err(CompileError::InvalidAssignmentTarget),
+                    _ => return Err(CompileError::InvalidAssignmentTarget { span }),
                 }
 
                 self.free_reg(val_reg);
@@ -1297,7 +1328,7 @@ impl Compiler {
                 child.proto.register_count = child.max_reg;
 
                 let proto_idx = self.proto.child_protos.len() as u32;
-                let upvalues = self.resolve_child_upvalues(&child.upvalue_names)?;
+                let upvalues = self.resolve_child_upvalues(&child.upvalue_names, span)?;
                 let mut child_proto = child.proto;
                 child_proto.upvalues = upvalues.clone();
                 self.proto.child_protos.push(child_proto);
