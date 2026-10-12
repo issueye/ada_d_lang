@@ -83,7 +83,6 @@ impl Vm {
         crate::builtins::register_all(&mut self.globals);
     }
 
-
     pub fn execute(&mut self, proto: FunctionProto) -> Result<Value, VmError> {
         let proto = Arc::new(proto);
         let needed_regs = proto.register_count as usize;
@@ -171,11 +170,7 @@ impl Vm {
                         (Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
                         (Value::String(x), y) => Value::string(format!("{x}{y}")),
                         (x, Value::String(y)) => Value::string(format!("{x}{y}")),
-                        _ => {
-                            return Err(VmError::TypeError(format!(
-                                "Cannot add {a:?} and {b:?}"
-                            )))
-                        }
+                        _ => return Err(VmError::TypeError(format!("Cannot add {a:?} and {b:?}"))),
                     };
                     self.registers[base + dst.0 as usize] = res;
                 }
@@ -232,9 +227,7 @@ impl Vm {
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 / y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x / *y as f64),
                         _ => {
-                            return Err(VmError::TypeError(format!(
-                                "Cannot divide {a:?} by {b:?}"
-                            )))
+                            return Err(VmError::TypeError(format!("Cannot divide {a:?} by {b:?}")))
                         }
                     };
                     self.registers[base + dst.0 as usize] = res;
@@ -247,9 +240,7 @@ impl Vm {
                         (Value::Int(x), Value::Int(y)) => Value::Int(x % y),
                         (Value::Float(x), Value::Float(y)) => Value::Float(x % y),
                         _ => {
-                            return Err(VmError::TypeError(format!(
-                                "Cannot modulo {a:?} by {b:?}"
-                            )))
+                            return Err(VmError::TypeError(format!("Cannot modulo {a:?} by {b:?}")))
                         }
                     };
                     self.registers[base + dst.0 as usize] = res;
@@ -441,7 +432,8 @@ impl Vm {
                                 return Err(VmError::StackOverflow);
                             }
 
-                            let new_base = base + self.frames[frame_idx].proto.register_count as usize;
+                            let new_base =
+                                base + self.frames[frame_idx].proto.register_count as usize;
                             let needed = new_base + closure.proto.register_count as usize;
                             if self.registers.len() < needed {
                                 self.registers.resize(needed * 2, Value::Nil);
@@ -625,14 +617,17 @@ impl Vm {
                             } else if field == "contains_key" {
                                 let m_clone = m.clone();
                                 Value::native_fn("contains_key", move |args| {
-                                    let key = args.first().map(|a| a.to_string()).unwrap_or_default();
+                                    let key =
+                                        args.first().map(|a| a.to_string()).unwrap_or_default();
                                     Ok(Value::Bool(m_clone.read().unwrap().contains_key(&key)))
                                 })
                             } else if field == "remove" {
                                 let m_clone = m.clone();
                                 Value::native_fn("remove", move |args| {
-                                    let key = args.first().map(|a| a.to_string()).unwrap_or_default();
-                                    let removed = m_clone.write().unwrap().remove(&key).unwrap_or(Value::Nil);
+                                    let key =
+                                        args.first().map(|a| a.to_string()).unwrap_or_default();
+                                    let removed =
+                                        m_clone.write().unwrap().remove(&key).unwrap_or(Value::Nil);
                                     Ok(removed)
                                 })
                             } else if field == "merge" {
@@ -675,7 +670,8 @@ impl Vm {
                                     if args.len() < 2 {
                                         return Err("insert expects (index, value)".into());
                                     }
-                                    let idx = args[0].as_int().ok_or("insert: index must be int")? as usize;
+                                    let idx = args[0].as_int().ok_or("insert: index must be int")?
+                                        as usize;
                                     let val = args[1].clone();
                                     let mut items = arr_clone.write().unwrap();
                                     if idx <= items.len() {
@@ -688,7 +684,11 @@ impl Vm {
                             } else if field == "remove" {
                                 let arr_clone = arr.clone();
                                 Value::native_fn("remove", move |args| {
-                                    let idx = args.first().and_then(|a| a.as_int()).ok_or("remove: index must be int")? as usize;
+                                    let idx = args
+                                        .first()
+                                        .and_then(|a| a.as_int())
+                                        .ok_or("remove: index must be int")?
+                                        as usize;
                                     let mut items = arr_clone.write().unwrap();
                                     if idx < items.len() {
                                         Ok(items.remove(idx))
@@ -718,12 +718,12 @@ impl Vm {
                                         (Value::Float(x), Value::Float(y)) => {
                                             x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
                                         }
-                                        (Value::Int(x), Value::Float(y)) => {
-                                            (*x as f64).partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal)
-                                        }
-                                        (Value::Float(x), Value::Int(y)) => {
-                                            x.partial_cmp(&(*y as f64)).unwrap_or(std::cmp::Ordering::Equal)
-                                        }
+                                        (Value::Int(x), Value::Float(y)) => (*x as f64)
+                                            .partial_cmp(y)
+                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                        (Value::Float(x), Value::Int(y)) => x
+                                            .partial_cmp(&(*y as f64))
+                                            .unwrap_or(std::cmp::Ordering::Equal),
                                         (Value::String(x), Value::String(y)) => x.cmp(y),
                                         _ => std::cmp::Ordering::Equal,
                                     });
@@ -819,8 +819,7 @@ impl Vm {
                                     s.chars().map(|c| Value::string(c.to_string())).collect();
                                 Value::native_fn("chars", move |_| Ok(Value::array(chars.clone())))
                             } else if field == "lines" {
-                                let lines: Vec<Value> =
-                                    s.lines().map(Value::string).collect();
+                                let lines: Vec<Value> = s.lines().map(Value::string).collect();
                                 Value::native_fn("lines", move |_| Ok(Value::array(lines.clone())))
                             } else if field == "trim" {
                                 let trimmed = s.trim().to_string();
@@ -844,28 +843,29 @@ impl Vm {
                                         .first()
                                         .map(|a| a.to_string())
                                         .unwrap_or_else(|| " ".to_string());
-                                    let parts: Vec<Value> = s_clone
-                                        .split(&sep)
-                                        .map(Value::string)
-                                        .collect();
+                                    let parts: Vec<Value> =
+                                        s_clone.split(&sep).map(Value::string).collect();
                                     Ok(Value::array(parts))
                                 })
                             } else if field == "contains" {
                                 let s_clone = s.clone();
                                 Value::native_fn("contains", move |args| {
-                                    let sub = args.first().map(|a| a.to_string()).unwrap_or_default();
+                                    let sub =
+                                        args.first().map(|a| a.to_string()).unwrap_or_default();
                                     Ok(Value::Bool(s_clone.contains(&sub)))
                                 })
                             } else if field == "starts_with" {
                                 let s_clone = s.clone();
                                 Value::native_fn("starts_with", move |args| {
-                                    let prefix = args.first().map(|a| a.to_string()).unwrap_or_default();
+                                    let prefix =
+                                        args.first().map(|a| a.to_string()).unwrap_or_default();
                                     Ok(Value::Bool(s_clone.starts_with(&prefix)))
                                 })
                             } else if field == "ends_with" {
                                 let s_clone = s.clone();
                                 Value::native_fn("ends_with", move |args| {
-                                    let suffix = args.first().map(|a| a.to_string()).unwrap_or_default();
+                                    let suffix =
+                                        args.first().map(|a| a.to_string()).unwrap_or_default();
                                     Ok(Value::Bool(s_clone.ends_with(&suffix)))
                                 })
                             } else if field == "replace" {
@@ -883,15 +883,30 @@ impl Vm {
                                 Value::native_fn("slice", move |args| {
                                     let char_count = s_clone.chars().count();
                                     let start = args.first().and_then(|a| a.as_int()).unwrap_or(0);
-                                    let end = args.get(1).and_then(|a| a.as_int()).unwrap_or(char_count as i64);
+                                    let end = args
+                                        .get(1)
+                                        .and_then(|a| a.as_int())
+                                        .unwrap_or(char_count as i64);
 
-                                    let start_idx = (if start < 0 { (char_count as i64 + start).max(0) } else { start.min(char_count as i64) }) as usize;
-                                    let end_idx = (if end < 0 { (char_count as i64 + end).max(0) } else { end.min(char_count as i64) }) as usize;
+                                    let start_idx = (if start < 0 {
+                                        (char_count as i64 + start).max(0)
+                                    } else {
+                                        start.min(char_count as i64)
+                                    }) as usize;
+                                    let end_idx = (if end < 0 {
+                                        (char_count as i64 + end).max(0)
+                                    } else {
+                                        end.min(char_count as i64)
+                                    }) as usize;
 
                                     if start_idx >= end_idx {
                                         Ok(Value::string(""))
                                     } else {
-                                        let sliced: String = s_clone.chars().skip(start_idx).take(end_idx - start_idx).collect();
+                                        let sliced: String = s_clone
+                                            .chars()
+                                            .skip(start_idx)
+                                            .take(end_idx - start_idx)
+                                            .collect();
                                         Ok(Value::string(sliced))
                                     }
                                 })
@@ -1029,8 +1044,7 @@ impl Vm {
                                 }
                             }
                             IteratorState::Range { current, end, step } => {
-                                if (*step > 0 && *current < *end)
-                                    || (*step < 0 && *current > *end)
+                                if (*step > 0 && *current < *end) || (*step < 0 && *current > *end)
                                 {
                                     self.registers[base + dst.0 as usize] = Value::Int(*current);
                                     *current += *step;

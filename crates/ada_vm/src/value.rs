@@ -42,10 +42,23 @@ pub enum Value {
 
 #[derive(Clone, Debug)]
 pub enum IteratorState {
-    Array { items: Vec<Value>, index: usize },
-    String { chars: Vec<char>, index: usize },
-    Map { entries: Vec<(String, Value)>, index: usize },
-    Range { current: i64, end: i64, step: i64 },
+    Array {
+        items: Vec<Value>,
+        index: usize,
+    },
+    String {
+        chars: Vec<char>,
+        index: usize,
+    },
+    Map {
+        entries: Vec<(String, Value)>,
+        index: usize,
+    },
+    Range {
+        current: i64,
+        end: i64,
+        step: i64,
+    },
 }
 
 impl Value {
@@ -132,7 +145,9 @@ impl Value {
                 serde_json::Value::Object(obj)
             }
             Value::Closure(c) => serde_json::Value::String(format!("<fn {}>", c.proto.name)),
-            Value::NativeFn { name, .. } => serde_json::Value::String(format!("<native fn {name}>")),
+            Value::NativeFn { name, .. } => {
+                serde_json::Value::String(format!("<native fn {name}>"))
+            }
             Value::Task(t) => t.read().unwrap().to_json(),
             Value::Iterator(_) => serde_json::Value::String("<iterator>".into()),
         }
@@ -180,7 +195,9 @@ impl PartialEq for Value {
             (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
             (Value::Closure(a), Value::Closure(b)) => a == b,
             (Value::NativeFn { name: a, .. }, Value::NativeFn { name: b, .. }) => a == b,
-            (Value::Task(a), Value::Task(b)) => Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap(),
+            (Value::Task(a), Value::Task(b)) => {
+                Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
+            }
             (Value::Iterator(a), Value::Iterator(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }

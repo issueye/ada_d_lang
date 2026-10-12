@@ -13,8 +13,8 @@ pub fn create_json_module() -> Value {
                 .ok_or_else(|| "json.parse expects a string argument".to_string())?
                 .to_string();
 
-            let parsed: serde_json::Value = serde_json::from_str(&str_val)
-                .map_err(|e| format!("json.parse failed: {e}"))?;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&str_val).map_err(|e| format!("json.parse failed: {e}"))?;
 
             Ok(Value::from_json(&parsed))
         }),

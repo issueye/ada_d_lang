@@ -8,7 +8,12 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(ClapParser)]
-#[command(name = "ada", author = "Ada-D Team", version = "0.1.0", about = "Ada-D Programming Language CLI")]
+#[command(
+    name = "ada",
+    author = "Ada-D Team",
+    version = "0.1.0",
+    about = "Ada-D Programming Language CLI"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

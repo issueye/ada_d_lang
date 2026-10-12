@@ -21,7 +21,9 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Fn)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Let)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Mut)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::Float(20.5))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::Float(20.5))));
     }
 
     #[test]
@@ -30,10 +32,16 @@ mod tests {
         let mut lexer = Lexer::new(code);
         let tokens = lexer.tokenize().expect("Lexing failed");
 
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::PipeGreater)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::PipeGreater)));
         assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::FatArrow)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::QuestionQuestion)));
-        assert!(tokens.iter().any(|t| matches!(t.kind, TokenKind::QuestionDot)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::QuestionQuestion)));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::QuestionDot)));
     }
 
     #[test]

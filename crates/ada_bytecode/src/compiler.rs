@@ -106,38 +106,28 @@ impl Compiler {
         }
 
         // Default return last value or nil
-        compiler.proto.emit(
-            Instruction::Return {
-                src: Some(ret_reg),
-            },
-            Span::default(),
-        );
+        compiler
+            .proto
+            .emit(Instruction::Return { src: Some(ret_reg) }, Span::default());
         compiler.proto.register_count = compiler.max_reg;
         Ok(compiler.proto)
     }
 
-    pub fn compile_stmt(
-        &mut self,
-        stmt: &Stmt,
-        dst: Option<Reg>,
-    ) -> Result<(), CompileError> {
+    pub fn compile_stmt(&mut self, stmt: &Stmt, dst: Option<Reg>) -> Result<(), CompileError> {
         match stmt {
             Stmt::Let {
-                name,
-                init,
-                span,
-                ..
+                name, init, span, ..
             } => {
                 let reg = self.alloc_reg()?;
                 if let Some(init_expr) = init {
                     self.compile_expr(init_expr, reg)?;
                 } else {
-                    self.proto
-                        .emit(Instruction::LoadNil { dst: reg }, *span);
+                    self.proto.emit(Instruction::LoadNil { dst: reg }, *span);
                 }
                 self.define_local(name.clone(), reg);
                 if let Some(d) = dst {
-                    self.proto.emit(Instruction::Move { dst: d, src: reg }, *span);
+                    self.proto
+                        .emit(Instruction::Move { dst: d, src: reg }, *span);
                 }
             }
 
@@ -187,7 +177,13 @@ impl Compiler {
                 }
                 self.define_local(name.clone(), fn_reg);
                 if let Some(d) = dst {
-                    self.proto.emit(Instruction::Move { dst: d, src: fn_reg }, *span);
+                    self.proto.emit(
+                        Instruction::Move {
+                            dst: d,
+                            src: fn_reg,
+                        },
+                        *span,
+                    );
                 }
             }
 
@@ -236,8 +232,7 @@ impl Compiler {
                 if let Some(ctx) = self.loop_stack.pop() {
                     for brk_idx in ctx.break_jumps {
                         let brk_offset = (exit_ip as i32) - (brk_idx as i32) - 1;
-                        if let Instruction::Jump { offset } =
-                            &mut self.proto.instructions[brk_idx]
+                        if let Instruction::Jump { offset } = &mut self.proto.instructions[brk_idx]
                         {
                             *offset = brk_offset;
                         }
@@ -339,8 +334,7 @@ impl Compiler {
                 if let Some(ctx) = self.loop_stack.pop() {
                     for brk_idx in ctx.break_jumps {
                         let brk_offset = (exit_ip as i32) - (brk_idx as i32) - 1;
-                        if let Instruction::Jump { offset } =
-                            &mut self.proto.instructions[brk_idx]
+                        if let Instruction::Jump { offset } = &mut self.proto.instructions[brk_idx]
                         {
                             *offset = brk_offset;
                         }
@@ -448,13 +442,8 @@ impl Compiler {
                     );
                 }
                 Literal::Bool(b) => {
-                    self.proto.emit(
-                        Instruction::LoadBool {
-                            dst,
-                            val: *b,
-                        },
-                        span,
-                    );
+                    self.proto
+                        .emit(Instruction::LoadBool { dst, val: *b }, span);
                 }
                 Literal::Nil => {
                     self.proto.emit(Instruction::LoadNil { dst }, span);
@@ -474,13 +463,8 @@ impl Compiler {
                     }
                 } else {
                     let name_idx = self.proto.add_name(name.clone());
-                    self.proto.emit(
-                        Instruction::GetGlobal {
-                            dst,
-                            name_idx,
-                        },
-                        span,
-                    );
+                    self.proto
+                        .emit(Instruction::GetGlobal { dst, name_idx }, span);
                 }
             }
 
@@ -681,10 +665,7 @@ impl Compiler {
             }
 
             Expr::Assign {
-                target,
-                op,
-                value,
-                ..
+                target, op, value, ..
             } => {
                 let val_reg = self.alloc_reg()?;
                 self.compile_expr(value, val_reg)?;
@@ -769,7 +750,8 @@ impl Compiler {
                                 },
                                 span,
                             );
-                            self.proto.emit(Instruction::Move { dst, src: val_reg }, span);
+                            self.proto
+                                .emit(Instruction::Move { dst, src: val_reg }, span);
                         }
                     }
                     Expr::FieldAccess { target, field, .. } => {
@@ -784,7 +766,8 @@ impl Compiler {
                             },
                             span,
                         );
-                        self.proto.emit(Instruction::Move { dst, src: val_reg }, span);
+                        self.proto
+                            .emit(Instruction::Move { dst, src: val_reg }, span);
                         self.free_reg(t_reg);
                     }
                     Expr::Index { target, index, .. } => {
@@ -800,7 +783,8 @@ impl Compiler {
                             },
                             span,
                         );
-                        self.proto.emit(Instruction::Move { dst, src: val_reg }, span);
+                        self.proto
+                            .emit(Instruction::Move { dst, src: val_reg }, span);
                         self.free_reg(i_reg);
                         self.free_reg(t_reg);
                     }
@@ -842,7 +826,11 @@ impl Compiler {
                 // x |> f(a, b) -> f(x, a, b)
                 // x |> f       -> f(x)
                 match &**rhs {
-                    Expr::Call { callee, args, span: s } => {
+                    Expr::Call {
+                        callee,
+                        args,
+                        span: s,
+                    } => {
                         let mut new_args = vec![(**lhs).clone()];
                         new_args.extend(args.iter().cloned());
                         let desugared = Expr::Call {
@@ -880,8 +868,7 @@ impl Compiler {
                 // Patch JumpIfNil to here
                 let rhs_start = self.proto.instructions.len();
                 let nil_offset = (rhs_start as i32) - (jmp_idx as i32) - 1;
-                if let Instruction::JumpIfNil { offset, .. } =
-                    &mut self.proto.instructions[jmp_idx]
+                if let Instruction::JumpIfNil { offset, .. } = &mut self.proto.instructions[jmp_idx]
                 {
                     *offset = nil_offset;
                 }
@@ -1142,9 +1129,9 @@ impl Compiler {
                                     },
                                     arm.span,
                                 ),
-                                Literal::Nil => {
-                                    self.proto.emit(Instruction::LoadNil { dst: lit_reg }, arm.span)
-                                }
+                                Literal::Nil => self
+                                    .proto
+                                    .emit(Instruction::LoadNil { dst: lit_reg }, arm.span),
                             };
                             let cmp_reg = self.alloc_reg()?;
                             self.proto.emit(
@@ -1264,26 +1251,16 @@ impl Compiler {
             Expr::Await { expr, .. } => {
                 let r_fut = self.alloc_reg()?;
                 self.compile_expr(expr, r_fut)?;
-                self.proto.emit(
-                    Instruction::Await {
-                        dst,
-                        future: r_fut,
-                    },
-                    span,
-                );
+                self.proto
+                    .emit(Instruction::Await { dst, future: r_fut }, span);
                 self.free_reg(r_fut);
             }
 
             Expr::Spawn { expr, .. } => {
                 let r_inner = self.alloc_reg()?;
                 self.compile_expr(expr, r_inner)?;
-                self.proto.emit(
-                    Instruction::Spawn {
-                        dst,
-                        expr: r_inner,
-                    },
-                    span,
-                );
+                self.proto
+                    .emit(Instruction::Spawn { dst, expr: r_inner }, span);
                 self.free_reg(r_inner);
             }
         }

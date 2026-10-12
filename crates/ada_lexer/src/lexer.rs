@@ -14,7 +14,11 @@ pub enum LexError {
     UnterminatedBlockComment { line: usize, col: usize },
 
     #[error("Invalid number literal '{raw}' at line {line}, col {col}")]
-    InvalidNumber { raw: String, line: usize, col: usize },
+    InvalidNumber {
+        raw: String,
+        line: usize,
+        col: usize,
+    },
 
     #[error("Unterminated expression in string interpolation at line {line}, col {col}")]
     UnterminatedInterpExpr { line: usize, col: usize },

@@ -69,17 +69,17 @@ pub enum TokenKind {
     ThinArrow,        // ->
 
     // Delimiters
-    LParen,   // (
-    RParen,   // )
-    LBracket, // [
-    RBracket, // ]
-    LBrace,   // {
-    RBrace,   // }
-    Comma,    // ,
-    Colon,    // :
-    Dot,      // .
-    Semicolon,// ;
-    Newline,  // \n
+    LParen,    // (
+    RParen,    // )
+    LBracket,  // [
+    RBracket,  // ]
+    LBrace,    // {
+    RBrace,    // }
+    Comma,     // ,
+    Colon,     // :
+    Dot,       // .
+    Semicolon, // ;
+    Newline,   // \n
 
     Eof,
 }

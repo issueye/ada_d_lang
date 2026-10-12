@@ -107,9 +107,7 @@ pub fn create_math_module() -> Value {
     // math.random() -> [0.0, 1.0)
     module.insert(
         "random".to_string(),
-        Value::native_fn("math.random", |_| {
-            Ok(Value::Float(next_random_f64()))
-        }),
+        Value::native_fn("math.random", |_| Ok(Value::Float(next_random_f64()))),
     );
 
     // math.random_int(min, max) -> [min, max]

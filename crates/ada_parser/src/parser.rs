@@ -184,10 +184,7 @@ impl Parser {
             init = Some(self.parse_expr()?);
         }
 
-        let end_span = init
-            .as_ref()
-            .map(|e| e.span())
-            .unwrap_or(name_tok.span);
+        let end_span = init.as_ref().map(|e| e.span()).unwrap_or(name_tok.span);
         self.consume_terminator();
 
         Ok(Stmt::Let {
@@ -515,11 +512,7 @@ impl Parser {
         }
     }
 
-    fn parse_interp_string(
-        &self,
-        parts: Vec<InterpPart>,
-        span: Span,
-    ) -> Result<Expr, ParseError> {
+    fn parse_interp_string(&self, parts: Vec<InterpPart>, span: Span) -> Result<Expr, ParseError> {
         let mut ast_parts = Vec::new();
 
         for part in parts {
@@ -557,10 +550,7 @@ impl Parser {
                 });
             } else {
                 // Empty unit literal / nil
-                return Ok(Expr::Literal(
-                    Literal::Nil,
-                    start_span.merge(rparen.span),
-                ));
+                return Ok(Expr::Literal(Literal::Nil, start_span.merge(rparen.span)));
             }
         }
 
@@ -764,7 +754,12 @@ impl Parser {
 
             // Check if this is the last statement without semicolon (trailing expression)
             if self.check(&TokenKind::RBrace) {
-                if let Stmt::Expr { expr, has_semicolon: false, .. } = stmt {
+                if let Stmt::Expr {
+                    expr,
+                    has_semicolon: false,
+                    ..
+                } = stmt
+                {
                     trailing = Some(Box::new(expr));
                     break;
                 }
@@ -941,10 +936,9 @@ impl Parser {
             TokenKind::Plus | TokenKind::Minus => Precedence::Term,
             TokenKind::Star | TokenKind::Slash | TokenKind::Percent => Precedence::Factor,
             TokenKind::PipeGreater => Precedence::Pipe,
-            TokenKind::LParen
-            | TokenKind::LBracket
-            | TokenKind::Dot
-            | TokenKind::QuestionDot => Precedence::Call,
+            TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => {
+                Precedence::Call
+            }
 
             _ => Precedence::Lowest,
         }

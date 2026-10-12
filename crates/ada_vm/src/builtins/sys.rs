@@ -5,7 +5,10 @@ pub fn create_sys_module() -> Value {
     let mut module = HashMap::new();
 
     // sys.version -> string
-    module.insert("version".to_string(), Value::string(env!("CARGO_PKG_VERSION")));
+    module.insert(
+        "version".to_string(),
+        Value::string(env!("CARGO_PKG_VERSION")),
+    );
 
     // sys.os -> string ("windows", "linux", "macos", etc.)
     module.insert("os".to_string(), Value::string(std::env::consts::OS));

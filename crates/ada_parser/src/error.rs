@@ -19,10 +19,7 @@ pub enum ParseError {
     },
 
     #[error("Invalid assignment target at line {line}, col {col}")]
-    InvalidAssignmentTarget {
-        line: usize,
-        col: usize,
-    },
+    InvalidAssignmentTarget { line: usize, col: usize },
 
     #[error("Lexer error: {0}")]
     Lex(#[from] LexError),

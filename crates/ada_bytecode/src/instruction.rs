@@ -21,75 +21,233 @@ pub enum Constant {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
-    LoadConst { dst: Reg, const_idx: u32 },
-    LoadNil { dst: Reg },
-    LoadBool { dst: Reg, val: bool },
-    LoadInt { dst: Reg, val: i32 },
-    Move { dst: Reg, src: Reg },
+    LoadConst {
+        dst: Reg,
+        const_idx: u32,
+    },
+    LoadNil {
+        dst: Reg,
+    },
+    LoadBool {
+        dst: Reg,
+        val: bool,
+    },
+    LoadInt {
+        dst: Reg,
+        val: i32,
+    },
+    Move {
+        dst: Reg,
+        src: Reg,
+    },
 
     // Arithmetic
-    Add { dst: Reg, lhs: Reg, rhs: Reg },
-    Sub { dst: Reg, lhs: Reg, rhs: Reg },
-    Mul { dst: Reg, lhs: Reg, rhs: Reg },
-    Div { dst: Reg, lhs: Reg, rhs: Reg },
-    Mod { dst: Reg, lhs: Reg, rhs: Reg },
+    Add {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Sub {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Mul {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Div {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Mod {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
 
     // Unary
-    Neg { dst: Reg, src: Reg },
-    Not { dst: Reg, src: Reg },
-    BitNot { dst: Reg, src: Reg },
+    Neg {
+        dst: Reg,
+        src: Reg,
+    },
+    Not {
+        dst: Reg,
+        src: Reg,
+    },
+    BitNot {
+        dst: Reg,
+        src: Reg,
+    },
 
     // Comparison
-    Eq { dst: Reg, lhs: Reg, rhs: Reg },
-    Ne { dst: Reg, lhs: Reg, rhs: Reg },
-    Lt { dst: Reg, lhs: Reg, rhs: Reg },
-    Le { dst: Reg, lhs: Reg, rhs: Reg },
-    Gt { dst: Reg, lhs: Reg, rhs: Reg },
-    Ge { dst: Reg, lhs: Reg, rhs: Reg },
+    Eq {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Ne {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Lt {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Le {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Gt {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Ge {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
 
     // Bitwise
-    BitAnd { dst: Reg, lhs: Reg, rhs: Reg },
-    BitOr { dst: Reg, lhs: Reg, rhs: Reg },
-    BitXor { dst: Reg, lhs: Reg, rhs: Reg },
-    Shl { dst: Reg, lhs: Reg, rhs: Reg },
-    Shr { dst: Reg, lhs: Reg, rhs: Reg },
+    BitAnd {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    BitOr {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    BitXor {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Shl {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
+    Shr {
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+    },
 
     // Jumps & Flow
-    Jump { offset: i32 },
-    JumpIfFalse { cond: Reg, offset: i32 },
-    JumpIfTrue { cond: Reg, offset: i32 },
-    JumpIfNil { cond: Reg, offset: i32 },
+    Jump {
+        offset: i32,
+    },
+    JumpIfFalse {
+        cond: Reg,
+        offset: i32,
+    },
+    JumpIfTrue {
+        cond: Reg,
+        offset: i32,
+    },
+    JumpIfNil {
+        cond: Reg,
+        offset: i32,
+    },
 
     // Calls & Returns
-    Call { dst: Reg, callee: Reg, arg_start: Reg, arg_count: u16 },
-    Return { src: Option<Reg> },
+    Call {
+        dst: Reg,
+        callee: Reg,
+        arg_start: Reg,
+        arg_count: u16,
+    },
+    Return {
+        src: Option<Reg>,
+    },
 
     // Globals
-    GetGlobal { dst: Reg, name_idx: u32 },
-    SetGlobal { name_idx: u32, src: Reg },
+    GetGlobal {
+        dst: Reg,
+        name_idx: u32,
+    },
+    SetGlobal {
+        name_idx: u32,
+        src: Reg,
+    },
 
     // Data structures
-    NewArray { dst: Reg, start: Reg, count: u16 },
-    NewMap { dst: Reg },
-    MapSet { map: Reg, key: Reg, val: Reg },
-    GetIndex { dst: Reg, target: Reg, index: Reg },
-    SetIndex { target: Reg, index: Reg, val: Reg },
-    GetField { dst: Reg, target: Reg, field_idx: u32, optional: bool },
-    SetField { target: Reg, field_idx: u32, val: Reg },
+    NewArray {
+        dst: Reg,
+        start: Reg,
+        count: u16,
+    },
+    NewMap {
+        dst: Reg,
+    },
+    MapSet {
+        map: Reg,
+        key: Reg,
+        val: Reg,
+    },
+    GetIndex {
+        dst: Reg,
+        target: Reg,
+        index: Reg,
+    },
+    SetIndex {
+        target: Reg,
+        index: Reg,
+        val: Reg,
+    },
+    GetField {
+        dst: Reg,
+        target: Reg,
+        field_idx: u32,
+        optional: bool,
+    },
+    SetField {
+        target: Reg,
+        field_idx: u32,
+        val: Reg,
+    },
 
     // String operations
-    StringConcat { dst: Reg, start: Reg, count: u16 },
+    StringConcat {
+        dst: Reg,
+        start: Reg,
+        count: u16,
+    },
 
     // Closures
-    Closure { dst: Reg, proto_idx: u32 },
+    Closure {
+        dst: Reg,
+        proto_idx: u32,
+    },
 
     // Async & Concurrency
-    Await { dst: Reg, future: Reg },
-    Spawn { dst: Reg, expr: Reg },
+    Await {
+        dst: Reg,
+        future: Reg,
+    },
+    Spawn {
+        dst: Reg,
+        expr: Reg,
+    },
 
     // Iterators
-    IterInit { dst: Reg, src: Reg },
-    IterNext { dst: Reg, iter: Reg, offset: i32 },
+    IterInit {
+        dst: Reg,
+        src: Reg,
+    },
+    IterNext {
+        dst: Reg,
+        iter: Reg,
+        offset: i32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

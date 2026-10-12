@@ -21,10 +21,25 @@ mod tests {
         let program = parser.parse_program().expect("Parse failed");
 
         assert_eq!(program.stmts.len(), 4);
-        assert!(matches!(program.stmts[0], Stmt::Let { ref name, is_mut: false, .. } if name == "a"));
-        assert!(matches!(program.stmts[1], Stmt::Let { ref name, is_mut: true, .. } if name == "count"));
-        assert!(matches!(program.stmts[2], Stmt::Expr { expr: Expr::Assign { op: AssignOp::AddAssign, .. }, .. }));
-        assert!(matches!(program.stmts[3], Stmt::Fn { ref name, ref params, .. } if name == "add" && params.len() == 2));
+        assert!(
+            matches!(program.stmts[0], Stmt::Let { ref name, is_mut: false, .. } if name == "a")
+        );
+        assert!(
+            matches!(program.stmts[1], Stmt::Let { ref name, is_mut: true, .. } if name == "count")
+        );
+        assert!(matches!(
+            program.stmts[2],
+            Stmt::Expr {
+                expr: Expr::Assign {
+                    op: AssignOp::AddAssign,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert!(
+            matches!(program.stmts[3], Stmt::Fn { ref name, ref params, .. } if name == "add" && params.len() == 2)
+        );
     }
 
     #[test]
@@ -38,7 +53,11 @@ mod tests {
         let program = parser.parse_program().expect("Parse failed");
 
         assert_eq!(program.stmts.len(), 1);
-        if let Stmt::Let { init: Some(Expr::Pipe { lhs, rhs, .. }), .. } = &program.stmts[0] {
+        if let Stmt::Let {
+            init: Some(Expr::Pipe { lhs, rhs, .. }),
+            ..
+        } = &program.stmts[0]
+        {
             assert!(matches!(**lhs, Expr::Pipe { .. }));
             assert!(matches!(**rhs, Expr::Call { .. }));
         } else {
@@ -55,7 +74,11 @@ mod tests {
         let program = parser.parse_program().expect("Parse failed");
 
         assert_eq!(program.stmts.len(), 1);
-        if let Stmt::Let { init: Some(Expr::NullCoalesce { lhs, .. }), .. } = &program.stmts[0] {
+        if let Stmt::Let {
+            init: Some(Expr::NullCoalesce { lhs, .. }),
+            ..
+        } = &program.stmts[0]
+        {
             assert!(matches!(**lhs, Expr::FieldAccess { optional: true, .. }));
         } else {
             panic!("Expected NullCoalesce expression");
@@ -74,7 +97,11 @@ mod tests {
         let program = parser.parse_program().expect("Parse failed");
 
         assert_eq!(program.stmts.len(), 1);
-        if let Stmt::Let { init: Some(Expr::Map { entries, .. }), .. } = &program.stmts[0] {
+        if let Stmt::Let {
+            init: Some(Expr::Map { entries, .. }),
+            ..
+        } = &program.stmts[0]
+        {
             assert_eq!(entries.len(), 2);
         } else {
             panic!("Expected Map literal");
@@ -94,7 +121,11 @@ mod tests {
         let program = parser.parse_program().expect("Parse failed");
 
         assert_eq!(program.stmts.len(), 1);
-        if let Stmt::Let { init: Some(Expr::Match { arms, .. }), .. } = &program.stmts[0] {
+        if let Stmt::Let {
+            init: Some(Expr::Match { arms, .. }),
+            ..
+        } = &program.stmts[0]
+        {
             assert_eq!(arms.len(), 3);
         } else {
             panic!("Expected Match expression");
@@ -116,12 +147,20 @@ mod tests {
 
         assert_eq!(program.stmts.len(), 3);
         assert!(matches!(program.stmts[0], Stmt::Fn { is_async: true, .. }));
-        if let Stmt::Let { init: Some(Expr::Spawn { .. }), .. } = &program.stmts[1] {
+        if let Stmt::Let {
+            init: Some(Expr::Spawn { .. }),
+            ..
+        } = &program.stmts[1]
+        {
             // ok
         } else {
             panic!("Expected spawn");
         }
-        if let Stmt::Let { init: Some(Expr::Await { .. }), .. } = &program.stmts[2] {
+        if let Stmt::Let {
+            init: Some(Expr::Await { .. }),
+            ..
+        } = &program.stmts[2]
+        {
             // ok
         } else {
             panic!("Expected await");

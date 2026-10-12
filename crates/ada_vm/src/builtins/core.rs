@@ -194,7 +194,10 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
         Value::native_fn("assert", |args| {
             let cond = args.first().is_some_and(|a| a.is_truthy());
             if !cond {
-                let msg = args.get(1).map(|m| m.to_string()).unwrap_or_else(|| "Assertion failed".into());
+                let msg = args
+                    .get(1)
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "Assertion failed".into());
                 return Err(msg);
             }
             Ok(Value::Bool(true))
@@ -222,12 +225,10 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
     // -------------------------------------------------------------
     globals.insert(
         "abs".to_string(),
-        Value::native_fn("abs", |args| {
-            match args.first() {
-                Some(Value::Int(n)) => Ok(Value::Int(n.abs())),
-                Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
-                _ => Ok(Value::Int(0)),
-            }
+        Value::native_fn("abs", |args| match args.first() {
+            Some(Value::Int(n)) => Ok(Value::Int(n.abs())),
+            Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
+            _ => Ok(Value::Int(0)),
         }),
     );
 
@@ -365,12 +366,20 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
         "range".to_string(),
         Value::native_fn("range", |args| {
             if args.is_empty() {
-                return Ok(Value::iterator(IteratorState::Range { current: 0, end: 0, step: 1 }));
+                return Ok(Value::iterator(IteratorState::Range {
+                    current: 0,
+                    end: 0,
+                    step: 1,
+                }));
             }
             let (start, end, step) = if args.len() == 1 {
                 (0, args[0].as_int().unwrap_or(0), 1)
             } else if args.len() == 2 {
-                (args[0].as_int().unwrap_or(0), args[1].as_int().unwrap_or(0), 1)
+                (
+                    args[0].as_int().unwrap_or(0),
+                    args[1].as_int().unwrap_or(0),
+                    1,
+                )
             } else {
                 (
                     args[0].as_int().unwrap_or(0),
@@ -378,7 +387,11 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                     args[2].as_int().unwrap_or(1),
                 )
             };
-            Ok(Value::iterator(IteratorState::Range { current: start, end, step }))
+            Ok(Value::iterator(IteratorState::Range {
+                current: start,
+                end,
+                step,
+            }))
         }),
     );
 
