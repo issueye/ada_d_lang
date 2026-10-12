@@ -48,6 +48,11 @@ enum Commands {
         /// Path to the .ada script file
         file: PathBuf,
     },
+    /// Check a script **without running it** (syntax + compile diagnostics only)
+    Check {
+        /// Path to the .ada script file
+        file: PathBuf,
+    },
     /// Launch interactive REPL session
     Repl,
 }
@@ -64,11 +69,7 @@ fn main() {
 
     // T0.6：统一错误格式 `[file:]line:col: error: <消息>`（有位置时）或 `<file>: error: <消息>`。
     // 自行捕获错误而不依赖 `main -> Result` 的 Debug 输出。
-    let source_name = cli
-        .file
-        .as_ref()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "<eval>".to_string());
+    let source_name = source_name(&cli);
 
     let result = dispatch(&cli, &sandbox);
     if let Err(err) = result {
@@ -86,6 +87,7 @@ fn dispatch(cli: &Cli, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Erro
         Some(Commands::Run { file }) => run_file(file, sandbox),
         Some(Commands::Eval { code }) => run_code(code, sandbox),
         Some(Commands::Dump { file }) => dump_bytecode(file),
+        Some(Commands::Check { file }) => check_file(file),
         Some(Commands::Repl) => run_repl(sandbox),
         None => {
             if let Some(file) = &cli.file {
@@ -95,6 +97,21 @@ fn dispatch(cli: &Cli, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Erro
             }
         }
     }
+}
+
+/// 报错前缀用的"来源名"：子命令里的文件路径优先于位置参数（T0.6）。
+///
+/// 少了这一步，`ada check script.ada` 的报错会写成 `<eval>:2:1: …`，
+/// 编辑器/CI 就丢掉了文件名。
+fn source_name(cli: &Cli) -> String {
+    let path = match &cli.command {
+        Some(Commands::Run { file })
+        | Some(Commands::Dump { file })
+        | Some(Commands::Check { file }) => Some(file),
+        _ => cli.file.as_ref(),
+    };
+    path.map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<eval>".to_string())
 }
 
 /// 把错误渲染成稳定的、面向用户与工具的单行格式（T0.6 / T1.8）。
@@ -172,6 +189,15 @@ fn run_code(source: &str, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::E
     if !val.is_nil() {
         println!("{val}");
     }
+    Ok(())
+}
+
+/// `ada check <file>`：只做静态检查（语法 + 编译），**不执行**脚本（T7.2）。
+///
+/// 编辑器与 CI 用它做"这段代码能不能编译"的门禁；成功后保持安静（Unix 惯例）。
+fn check_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    let source = fs::read_to_string(path)?;
+    Engine::check(&source)?;
     Ok(())
 }
 

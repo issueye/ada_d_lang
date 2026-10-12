@@ -312,6 +312,42 @@ impl Engine {
         let val = self.eval_value(source)?;
         T::from_value(val)
     }
+
+    /// **静态检查**：只做词法 / 语法 / 编译检查，**不执行**脚本（T7.2）。
+    ///
+    /// 编辑器（LSP）与 CI 需要"判断这段代码能不能编译"而不想承担执行代价与副作用：
+    /// `eval_diagnostic` 会真的跑脚本（可能 `sleep`、读写宿主、触发沙箱限额），
+    /// 因此这里提供一条纯静态路径。返回的错误与求值路径同源（`ParseError` /
+    /// `CompileError` + `Position`），保证编辑器里的波浪线与 `ada run` 的报错一致。
+    ///
+    /// 注意：运行时错误（如未定义全局变量、类型错误）需要执行才知道，不在本方法范围内。
+    ///
+    /// ```
+    /// # use ada_engine::Engine;
+    /// assert!(Engine::check("let a = 1\na + 1").is_ok());
+    /// let failure = Engine::check("let a = 1\na = 2").unwrap_err();
+    /// assert_eq!(failure.position.map(|p| p.line), Some(2));
+    /// ```
+    pub fn check(source: &str) -> Result<(), EvalFailure> {
+        let parsed = Parser::from_source(source).and_then(|mut parser| parser.parse_program());
+        let program = match parsed {
+            Ok(program) => program,
+            Err(err) => {
+                let (line, col) = err.position();
+                return Err(EvalFailure {
+                    error: Error::Parse(err),
+                    position: Some(Position { line, col }),
+                });
+            }
+        };
+        match Compiler::compile_program(&program) {
+            Ok(_) => Ok(()),
+            Err(err) => Err(EvalFailure {
+                position: err.span().map(Position::from_span),
+                error: Error::Compile(err),
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
