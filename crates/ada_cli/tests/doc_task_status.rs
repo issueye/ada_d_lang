@@ -136,6 +136,8 @@ fn open_markers_do_not_reference_completed_tasks() {
     let mut stale = Vec::new();
     let mut unknown = Vec::new();
     let mut checked_rows = 0usize;
+    let mut open_rows = 0usize;
+    let mut live_references = 0usize;
 
     for file in documents() {
         let Ok(content) = std::fs::read_to_string(&file) else {
@@ -150,6 +152,7 @@ fn open_markers_do_not_reference_completed_tasks() {
             if !is_open_marker || trimmed.contains(DONE) {
                 continue;
             }
+            open_rows += 1;
             let ids = task_ids_in(trimmed);
             if ids.is_empty() {
                 continue;
@@ -169,7 +172,7 @@ fn open_markers_do_not_reference_completed_tasks() {
                         index + 1,
                         trimmed
                     )),
-                    Some(TaskStatus::Open) => {}
+                    Some(TaskStatus::Open) => live_references += 1,
                     None => unknown.push(format!(
                         "{}:{}: 引用了计划里不存在的任务 {id}\n    {}",
                         file.display(),
@@ -181,11 +184,20 @@ fn open_markers_do_not_reference_completed_tasks() {
         }
     }
 
-    // 门禁本身要有判别力：至少检查过若干行，否则说明解析规则失效了
+    // 门禁自身必须可判别，但**不能因为文档变干净就失灵**：修完缺口后，引用任务 ID 的
+    // 开放行会越来越少（本轮就从 5 行降到 4 行）。因此这里要求的是：
+    //   1. 确实存在开放标记行（否则说明解析规则没匹配上文档格式）；
+    //   2. 至少有一条引用指向**仍在进行中**的任务（说明交叉校验真的在跑）。
+    // 解析是否健壮另有 `plan_ids_are_well_formed` 兜底（独立一条断言）。
     assert!(
-        checked_rows >= 5,
-        "expected to check at least 5 open-marker rows, found {checked_rows}; \
+        open_rows >= 5,
+        "expected at least 5 rows carrying ⚠️/📋 without ✅, found {open_rows}; \
          the parsing rule probably stopped matching the document format"
+    );
+    assert!(
+        live_references >= 1,
+        "no ⚠️/📋 row cites a still-open task (checked {checked_rows} rows carrying ids); \
+         either every gap was closed - then relax this assertion - or the cross-check broke"
     );
 
     assert!(

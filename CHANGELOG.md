@@ -106,6 +106,15 @@
 
 ### Fixed
 
+- **循环外的 `break` / `continue` 现在报编译错误（T8.2，缺口 G-L13）**：此前编译器静默忽略，
+  `fn f() { break }` 直接返回 `nil`。新增 `CompileError::LoopKeywordOutsideLoop`（带 `Span`，
+  CLI 输出 `file:line:col`）；`if` 体内、以及**闭包体内**（闭包是独立函数）的 `break` 同样报错。
+  循环内行为不变（嵌套 `break` 只跳最内层）。
+- **插值字符串的诊断消息补上边界上下文（T8.1，缺口 G-L6）**：实测确认位置**本来就是正确的**
+  （单行/多行/片段内词法错误都正确映射回源文件），真正的缺陷是消息——片段独立解析让用户在 `}`
+  处看到 `<EOF>`。现在追加说明"inside this interpolation, which ends at the next brace"，
+  且不覆盖原期望记号（`$"{(1}"` 仍报 `expected )`）。位置与消息由
+  `crates/ada_parser/tests/interpolation_positions.rs`（6 用例）固定。
 - `ada check <file>` / `ada run <file>` 的错误前缀此前会写成 `<eval>`（子命令里的文件路径没被
   当成来源名），编辑器与 CI 会因此丢掉文件名；现在统一取子命令里的路径（T0.6）。
 
