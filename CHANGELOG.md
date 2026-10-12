@@ -7,6 +7,19 @@
 
 ### Added
 
+### Added
+
+- **常量融合指令 `BinaryConst`（T6.6）**：编译器把"一侧是 i32 整数字面量"的算术/比较
+  （`x * 2 + 1`、`i % 2 == 0`、`while i < 5`）编成**单条**指令，省掉一条 `LoadInt` 与一次派发；
+  字面量在左侧时按可交换/可镜像规则换向（`2 < x` → `Gt`），不可镜像的（`2 - x`、`6 / x`）不融合。
+  - **确定性收益（指令数，零抖动）**：fib −17.4%、iterator_pipeline **−31.3%**、numeric_loop −22.2%；
+    json_roundtrip 与 string_concat 无字面量运算，指令数不变（符合预期）。
+  - **墙钟收益**（criterion，同会话前后对比）：iterator_pipeline −15.8%、冷启动 −14.6%、
+    fib −11.1%、numeric_loop −11.1%；json +2.0%（p=0.14，不显著）。
+  - 等价性由差分测试固定：`crates/ada_vm/tests/instruction_fusion.rs` 用"常量放变量里"的写法
+    走通用路径，与融合路径逐组合比对**结果与错误消息**（12 种左值 × 11 运算符 × 5 常量 = 660 组合），
+    外加 i64::MIN / -1、除零/取模零、越界字面量等用例。
+  - `benches/budgets.txt` 已按文档流程刷新（仅在确认指令数变化是刻意的、且语义有测试守住时才刷新）。
 - **`crypto` 模块（M7 / T7.5）**：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、
   `crypto.hex(text)`。纯计算、不碰宿主能力，因此三档 profile 都可用（与 `json`/`math` 同级）；
   正确性由 Node.js `crypto` 独立实现交叉验证（UTF-8 字节语义、多字节键/消息）。

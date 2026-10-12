@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **293**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `semantics.rs` 27 + `interpolation_positions.rs` 6 + `security.rs` 21 + `doc_examples.rs` 16 + `diagnostics.rs` 12 + `fs_sandbox.rs` 10 + `cli_errors.rs` 9 + `persistent_eval.rs` 10 + `numeric_semantics.rs` 7 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `doc_task_status.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
+| 测试总数 | 34 | **298**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `semantics.rs` 27 + `instruction_fusion.rs` 5 + `interpolation_positions.rs` 6 + `security.rs` 21 + `doc_examples.rs` 16 + `diagnostics.rs` 12 + `fs_sandbox.rs` 10 + `cli_errors.rs` 9 + `persistent_eval.rs` 10 + `numeric_semantics.rs` 7 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `doc_task_status.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -264,6 +264,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | ✅ T6.2 | VM 优化：捕获表共享、指令循环头部合并、挂起检查免写、计量合并、**`Value` 48→16 字节** | W2 | P2 | `vm.rs`, `value.rs`, `lib.rs` | **达成**：五项改动，累计对 M6 原始基线 **fib −25.3%、numeric_loop −23.7%、iterator_pipeline −46.6%、json −21.4%、冷启动 −27.9%**（平均 ≈ −29%，适配器路径远超 ≥30% 验收线）；`Value` 从 48 → **16 字节**，寄存器文件 96 KiB → **32 KiB**（进 L1）——该项单独贡献 pipeline **−34.7%**、fib −10.1%。**指令数基线逐字节不变**（只改表示与派发成本，未减工作量）。门禁：`crates/ada_vm/tests/value_layout.rs`（5 个用例）固定尺寸/寄存器文件/L1 性质 |
 | ✅ T6.3 | 决策 D1 落地：维持 `enum Value` 或实施 NaN-boxing | W2 | P2 | `value.rs` | 完成证据：**D1 = A（维持 enum）**：`Value` 已降到 16 字节（该设计下 tag + 8B 载荷的实际下限），实测已拿到 −25%〜−46.6%，NaN-boxing 再省 8 字节不足以抵消 `value.rs` 全量重写 + builtins 改造 + 与 `Arc`/GC（D6）耦合的风险。另完成 M5 遗留的 **D6 = A（维持 `Arc<RwLock>`）** 评估 |
 | 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | W2 | P3 | `crates/ada_jit/`（新） | **延后**（理由见下）；验收线保持 `fib(30)` 较 VM 提速 ≥10×，基准已就绪可直接对标 |
+| ✅ T6.6 | 常量融合：`BinaryConst`（一侧为 i32 整数字面量的算术/比较编成单条指令） | W2 | P2 | `ada_bytecode`, `ada_vm` | 完成证据（§11.7 的"JIT 前先做指令特化"）：`x * 2 + 1` 由 4 条指令变 2 条；`2 < x` 自动换向为 `Gt`。**确定性收益**：指令数 fib −17.4%、iterator_pipeline **−31.3%**、numeric_loop −22.2%（json/string_concat 无字面量运算，不变）。**墙钟收益**：iterator_pipeline −15.8%、冷启动 −14.6%、fib −11.1%、numeric_loop −11.1%（json +2.0% 不显著）。测试：`instruction_fusion.rs` 的差分矩阵（12 种左值形态 × 11 运算符 × 5 常量 = 660 组合，结果与**错误消息**逐字比对）+ 极值/溢出/除零/越界字面量用例。基线已按文档流程刷新 |
 | ✅ T6.5 | 性能回归门禁：劣化 >5% 报警 | W6 | P3 | `crates/ada_vm/tests/perf_budget.rs`, `benches/budgets.txt`, CI | 完成证据：门禁度量为**指令数**（完全确定、零抖动），超基线 5% 即失败，并校验基准程序的**计算正确性**；CI 新增 `benchmarks` job（显式跑门禁 + 编译并出数墙钟基准，墙钟不设阈值）。T6.2e 的验证正是"指令数不变 + 墙钟降 10–35%"，说明该门禁能精确区分"少干活"与"干得更快" |
 
 **退出标准**：✅ 性能陈述有基准数据支撑（SPEC_RUNTIME §11 与 WHITEPAPER 已全部改为引用基准数字）。
@@ -327,7 +328,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 293 passed / 0 failed（单元 59 + 集成/门禁 232 + 文档测试 2）。
+**当前状态**：`cargo test --workspace` → 298 passed / 0 failed（单元 59 + 集成/门禁 237 + 文档测试 2）。
 
 ---
 
