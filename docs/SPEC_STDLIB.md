@@ -57,10 +57,10 @@
 
 | 签名 | 行为 | 备注 |
 | :--- | :--- | :--- |
-| `abs(x)` | Int → Int；Float → Float | ⚠️ 非数字返回 `Int(0)`（静默） |
+| `abs(x)` | Int → Int；Float → Float | ✅ 非数值**报错**（G-S6 已修复）：`abs("x")` → `abs: expected a number, got string` |
 | `min(a, b, ...)` / `max(a, b, ...)` | 返回最小/最大值；单参数且为数组时作用于数组；空数组返回 `nil` | ✅ 不可比较的元素（非数字）被跳过 |
 | `clamp(x, min, max)` | 夹取；首参为 Int 则返回 Int，否则 Float | ✅ |
-| `round(x)` / `floor(x)` / `ceil(x)` | 返回 **Int** | ⚠️ 非数字返回 `Int(0)` |
+| `round(x)` / `floor(x)` / `ceil(x)` | 返回 **Int**；同时提供 `math.round/floor/ceil` 别名 | ✅ 非数值**报错**（G-S6/G-S7 已修复） |
 | `math.*` 高级函数 | 见 §3.2 | — |
 
 ### 2.6 集合与区间
@@ -70,7 +70,7 @@
 | `len(v)` | ✅ | Array→元素数、Map→键数、**String→字符数**、其它→0 |
 | `range(start, end, [step])` | ✅ | 返回**惰性** `iterator`；左闭右开；`step` 缺省 1；`range(n)` = `range(0, n)`；`step` 为负时倒序；`step == 0` 产生空迭代 |
 | `push(arr, v)` | ✅ | 就地向数组追加，返回 `nil`；等价 `arr.push(v)` |
-| `sum(arr)` | ✅ | 数值累加（Int 保持 Int，出现 Float 则整体 Float）；⚠️ 非数值元素**静默忽略** |
+| `sum(arr)` | ✅ | 数值累加（Int 保持 Int，出现 Float 则整体 Float）；非数值元素**报错**（G-S6 已修复） |
 
 ### 2.7 异步原语 ✅（M4：由 VM 调度器实现，语义见 [SPEC_ASYNC](SPEC_ASYNC.md)）
 
@@ -105,13 +105,13 @@
 | API | 说明 |
 | :--- | :--- |
 | `math.PI` / `math.E` / `math.INF` | 常量（Float） |
-| `math.sqrt(x)` | 平方根；非数字按 0 处理 ⚠️ |
+| `math.sqrt(x)` | 平方根；非数值**报错**（G-S6 已修复，含 `log`/`log10`/`sin`/`cos`/`tan`/`pow`） |
 | `math.pow(x, y)` | 幂；参数不足报错 |
 | `math.log(x)` / `math.log10(x)` | 自然对数 / 常用对数 |
 | `math.sin(x)` / `math.cos(x)` / `math.tan(x)` | 三角函数（弧度） |
 | `math.random()` | `[0.0, 1.0)`；线程局部 xorshift 状态，进程启动时以时间播种 |
 | `math.random_int(min, max)` | `[min, max]` 闭区间；`min >= max` 时返回 `min` |
-| 舍入函数（`round`/`floor`/`ceil`） | 以**全局函数**形式提供，不在 `math` 命名空间 ⚠️（命名不一致） |
+| 舍入函数（`round`/`floor`/`ceil`） | **全局与 `math.*` 两个命名空间都提供**（G-S7 已修复：此前只有全局名） |
 
 ### 3.3 `time` ✅（受沙箱管控目标见 T5.1）
 
@@ -382,8 +382,8 @@ engine.register_module(MyToolModule::new());
 | G-S3 | `iterator` 无任何方法，无法链式消费 | ✅ 已修复（T2.3）：适配器 + `.iter()`/`.next()` 可用 | ✅ T2.3 |
 | G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ✅ 已修复（T4.3/T4.5）：`sleep_ms` 挂起而非阻塞；`await_any`/`await_race` 返回最先结算者，新增 `timeout`/`cancel` | ✅ M4 |
 | G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ✅ 已修复（M5）：`Sandbox` 三档 + builder，`env` 键白名单（未授权不读宿主环境） | ✅ T5.1 / T5.2 |
-| G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ 口径统一 | T3.5 |
-| G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |
+| G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ✅ 已修复：非数值一律报错并给出实际类型（`abs: expected a number, got string`），与 M3 对比较运算的收紧一致 | ✅ 本轮（`numeric_semantics.rs` 7 用例） |
+| G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ✅ 已修复：补上 `math.round/floor/ceil`（全局名保留，无破坏性变更） | ✅ 本轮 |
 | G-S8 | map 迭代/`keys()`/`entries()` 顺序不保证（`HashMap`） | ⚠️ | 规范明示；如需稳定顺序见 D6 |
 | G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ✅ 已修复（T3.6）：`1.0` → `"1.0"`，`1e300` → `"1e300"` | ✅ T3.6 |
 | G-S10 | 缺失 `is_iterator` | ✅ 已修复（T2.1）：已注册 `is_iterator` | ✅ T2.1 |

@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **272**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `closures.rs` 15 + `semantics.rs` 22 + `security.rs` 21 + `diagnostics.rs` 12 + `doc_examples.rs` 16 + `fs_sandbox.rs` 10 + `persistent_eval.rs` 8 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `cli_errors.rs` 9 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
+| 测试总数 | 34 | **281**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `semantics.rs` 22 + `security.rs` 21 + `doc_examples.rs` 16 + `diagnostics.rs` 12 + `fs_sandbox.rs` 10 + `cli_errors.rs` 9 + `persistent_eval.rs` 8 + `numeric_semantics.rs` 7 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `doc_task_status.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -327,7 +327,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 272 passed / 0 failed（单元 59 + 集成/门禁 211 + 文档测试 2）。
+**当前状态**：`cargo test --workspace` → 281 passed / 0 failed（单元 59 + 集成/门禁 220 + 文档测试 2）。
 
 ---
 
@@ -394,11 +394,15 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 ```
 docs/
 ├── README.md             # 文档索引：状态图例、权威来源矩阵、阅读路径、治理摘要
+├── SUMMARY.md            # mdBook 目录（新增文档必须登记，docs_site.rs 强制）
+├── book.toml             # mdBook 配置（源目录就是 docs/，产物在 target/mdbook）
 ├── DEVELOPMENT_PLAN.md   # 唯一路线图/里程碑/任务/验收（本文档）
 ├── WHITEPAPER.md         # 愿景、定位、Token 论据（不含规范细节与路线图）
+├── AI_GUIDE.md           # 面向 AI 生成代码的单页规格（页内示例由 CLI 真实执行）
+├── EDITORS.md            # 编辑器与工具链集成（ada check / ada-lsp / 接入方式）
 ├── SPEC_LANGUAGE.md      # 语法、类型、语义规则（唯一权威）
-├── SPEC_RUNTIME.md       # 字节码、指令集、VM、值模型、错误模型、嵌入 API、沙箱与权限
-├── SPEC_STDLIB.md        # 全局函数、原生模块、原型方法、统一迭代器协议与适配器（合并原 ITERATOR_SPEC）
+├── SPEC_RUNTIME.md       # 字节码、指令集、VM、值模型、错误模型、嵌入 API、沙箱与权限、性能
+├── SPEC_STDLIB.md        # 全局函数、原生模块（json/math/crypto/fs/time/sys/env）、原型方法、适配器
 └── SPEC_ASYNC.md         # 异步语法、并发原语、调度与挂起模型、任务契约
 ```
 
@@ -411,6 +415,17 @@ docs/
 3. 禁止在规范文档中写"实施路线/里程碑"——统一指向本文档。
 4. 规范与实现冲突时以规范为准；改规范需在 §10 留决策记录。
 5. 每个里程碑结束时执行一次文档巡检：状态标记、失效链接、示例可运行性。
+
+### 11.3 自动化门禁（规则 1/2/5 的可执行版本）
+
+| 规则 | 门禁 |
+| :--- | :--- |
+| 失效链接 / 锚点（含非 Markdown 目标的存在性） | `crates/ada_cli/tests/doc_links.rs` |
+| 规范文档不得写路线图/里程碑 | 同上（`spec_documents_do_not_contain_roadmaps`） |
+| 每个 `docs/*.md` 必须登记在 `SUMMARY.md`，且站点能真实构建 | `crates/ada_cli/tests/docs_site.rs` |
+| 页内示例必须真实可运行（AI 规格） | `crates/ada_cli/tests/ai_guide.rs`（含 Markdown 列表缩进处理） |
+| **⚠️/📋 条目不指向已完成任务**（防状态漂移） | `crates/ada_cli/tests/doc_task_status.rs`（解析 §4/§13 的任务状态做交叉校验） |
+| 编辑器语法关键字与词法表一致 | `crates/ada_cli/tests/editor_grammar.rs` |
 
 ---
 
@@ -428,6 +443,28 @@ docs/
 | M7 生态工具链 | 长期 | ✅ | ☑（T7.1–T7.5 全部完成；`http` 按 D9 明确不做） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。
+
+---
+
+## 13. 后续任务（0.2.0 候选）
+
+M0–M7 完成后，仍**真实存在**的缺口集中在这里（其余历史缺口已修复，见各规范 §缺口汇总）。
+登记为任务 ID 是刻意的：文档里标 ⚠️/📋 的条目必须能找到对应任务，
+`crates/ada_cli/tests/doc_task_status.rs` 会强制这条规则。
+
+| ID | 任务 | 优先级 | 涉及文件 | 现状与证据 |
+| :--- | :--- | :--- | :--- | :--- |
+| 📋 T8.1 | 插值字符串内的错误定位（缺口 G-L6） | P3 | `ada_lexer`, `ada_parser` | 现已确认：`$"x {1 +} y"` 报 `<eval>:1:9: error: unexpected token <EOF>` —— 列号落在插值片段内且消息丢失了外层上下文（片段被单独重新词法解析，偏移未回填）。跨行插值时偏差更明显 |
+| 📋 T8.2 | 函数内游离 `break` / `continue` 应报编译错误（缺口 G-L13） | P2 | `ada_bytecode` | 现已确认：`fn f() { break }` 静默返回 `nil`（循环外的 `break` 被编译器忽略）。按 M3 的"不静默"原则应报 `CompileError` |
+| 📋 T8.3 | REPL/跨轮次的全局镜像一致性（缺口 G-L17、G-L16） | P2 | `ada_engine`, `ada_bytecode` | 已确认并**有测试固定**：跨轮求值时上一轮顶层绑定已是全局变量，`let` 不可变性不生效（`persistent_eval.rs::immutability_is_enforced_within_a_program_but_not_across_evaluations`）；被闭包捕获的顶层变量其全局镜像也不跟随闭包内的写入。需要"REPL 持久作用域"或带可变性元数据的全局槽 |
+| 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | P3 | `crates/ada_jit/`（新） | 唯一未启动的**计划内**任务（M6 延后项）。验收线：`fib(30)` 较 VM 提速 ≥10×；基准与指令数门禁已就绪可直接对标 |
+
+> **不打算做的**（避免每次复核都重新讨论）：
+> - `a = b = c` 链式赋值：保留"报 `invalid assignment target`"的明确错误（❌ 无计划）。
+> - 类型标注不做运行时校验：规范已明示"解析后忽略"（❌ 无计划，见 SPEC_LANGUAGE §2/§4）。
+> - 非容器字段访问返回 `nil`（`(5).foo`）：与"未知成员 → `nil`"统一，`??`/`?.` 依赖该语义（❌ 无计划）。
+> - `http` 模块：见决策 D9（❌ 0.1.0 不做）。
+> - `1e5` 科学计数法：需写 `1.0e5`（❌ 解析歧义大于收益）。
 
 ---
 
