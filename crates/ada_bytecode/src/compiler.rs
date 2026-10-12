@@ -25,6 +25,8 @@ pub struct Compiler {
     next_reg: u16,
     max_reg: u16,
     loop_stack: Vec<LoopContext>,
+    /// 仅顶层（模块）编译单元为 true：决定顶层绑定是否同时写入全局表
+    is_module_scope: bool,
 }
 
 struct LoopContext {
@@ -41,6 +43,7 @@ impl Compiler {
             next_reg: arity, // R0 .. R(arity-1) are parameters
             max_reg: arity,
             loop_stack: Vec::new(),
+            is_module_scope: false,
         };
         comp.max_reg = comp.max_reg.max(arity);
         comp
@@ -99,6 +102,7 @@ impl Compiler {
 
     pub fn compile_program(program: &Program) -> Result<FunctionProto, CompileError> {
         let mut compiler = Compiler::new("<main>", 0);
+        compiler.is_module_scope = true;
         let ret_reg = compiler.alloc_reg()?;
 
         for stmt in &program.stmts {
@@ -125,6 +129,13 @@ impl Compiler {
                     self.proto.emit(Instruction::LoadNil { dst: reg }, *span);
                 }
                 self.define_local(name.clone(), reg);
+                // T2.4：模块顶层的绑定同时写入全局表，使 REPL 跨行求值可见；
+                // 函数体内的顶层局部变量不会外泄（is_module_scope 为 false）。
+                if self.is_module_scope && self.scope_depth == 0 {
+                    let name_idx = self.proto.add_name(name.clone());
+                    self.proto
+                        .emit(Instruction::SetGlobal { name_idx, src: reg }, *span);
+                }
                 if let Some(d) = dst {
                     self.proto
                         .emit(Instruction::Move { dst: d, src: reg }, *span);

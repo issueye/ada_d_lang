@@ -92,6 +92,17 @@ impl Engine {
         self.vm.get_fuel()
     }
 
+    /// 当前这次求值剩余的可执行指令数（T2.6）。
+    pub fn remaining_fuel(&self) -> Option<u64> {
+        self.vm.remaining_fuel()
+    }
+
+    /// 把剩余燃料重置为配置的预算（T2.6）。
+    /// 每次 `eval*` 也会自动重新装填，因此一次 `OutOfFuel` 不会让 `Engine` 永久失效。
+    pub fn reset_fuel(&mut self) {
+        self.vm.reset_fuel()
+    }
+
     pub fn register_fn(
         &mut self,
         name: impl Into<String>,
