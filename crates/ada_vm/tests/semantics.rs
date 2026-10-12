@@ -291,3 +291,38 @@ fn valid_programs_from_earlier_milestones_still_run() {
     "#;
     assert_eq!(ok(code), Value::Int(9));
 }
+
+// ============================================================ 模式字面量精确性（本轮修复）
+
+#[test]
+fn large_integer_literals_match_in_patterns() {
+    // 回归：模式里的字面量此前被 `as i32` 截断，导致
+    // `match 5000000000 { 5000000000 => "hit" }` 静默落到 `_` 分支。
+    assert_eq!(
+        ok("match 5000000000 { 5000000000 => \"hit\", _ => \"miss\" }"),
+        Value::string("hit")
+    );
+    assert_eq!(
+        ok("match 2147483648 { 2147483648 => \"hit\", _ => \"miss\" }"),
+        Value::string("hit")
+    );
+    // i32 上下边界两侧都要正确（边界内走 LoadInt，边界外走常量池）
+    assert_eq!(
+        ok("match 2147483647 { 2147483647 => \"hit\", _ => \"miss\" }"),
+        Value::string("hit")
+    );
+    assert_eq!(
+        ok("match -2147483649 { -2147483649 => \"hit\", _ => \"miss\" }"),
+        Value::string("hit")
+    );
+    assert_eq!(
+        ok("match 9223372036854775807 { 9223372036854775807 => \"hit\", _ => \"miss\" }"),
+        Value::string("hit"),
+        "i64 最大值也必须精确匹配"
+    );
+    // 不相等时仍然落到 `_`
+    assert_eq!(
+        ok("match 5000000001 { 5000000000 => \"hit\", _ => \"miss\" }"),
+        Value::string("miss")
+    );
+}

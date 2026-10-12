@@ -1440,13 +1440,29 @@ impl Compiler {
                         Pattern::Literal(lit) => {
                             let lit_reg = self.alloc_reg()?;
                             match lit {
-                                Literal::Int(n) => self.proto.emit(
-                                    Instruction::LoadInt {
-                                        dst: lit_reg,
-                                        val: *n as i32,
-                                    },
-                                    arm.span,
-                                ),
+                                Literal::Int(n) => {
+                                    // 超过 i32 的字面量必须走常量池，否则会被截断：
+                                    // `match 5000000000 { 5000000000 => … }` 此前会静默失配。
+                                    // 与表达式路径（compile_expr 的 Literal::Int）保持同一规则。
+                                    if *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
+                                        self.proto.emit(
+                                            Instruction::LoadInt {
+                                                dst: lit_reg,
+                                                val: *n as i32,
+                                            },
+                                            arm.span,
+                                        )
+                                    } else {
+                                        let c = self.proto.add_constant(Constant::Int(*n));
+                                        self.proto.emit(
+                                            Instruction::LoadConst {
+                                                dst: lit_reg,
+                                                const_idx: c,
+                                            },
+                                            arm.span,
+                                        )
+                                    }
+                                }
                                 Literal::Float(f) => {
                                     let c = self.proto.add_constant(Constant::Float(*f));
                                     self.proto.emit(

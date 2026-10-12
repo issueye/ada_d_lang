@@ -884,6 +884,31 @@ impl Parser {
                 self.advance();
                 Pattern::Literal(Literal::Int(*n))
             }
+            // T3.7 修订：负数模式字面量（`-5 => …`）。
+            // 此前 `-` 落到"未知模式"分支报语法错，而 `< -5` 之类的比较模式却可以写，
+            // 口径不一致。负数与整数共用同一条模式路径，因此大负数同样精确。
+            TokenKind::Minus => {
+                self.advance();
+                let number_tok = self.peek().clone();
+                match &number_tok.kind {
+                    TokenKind::Int(n) => {
+                        self.advance();
+                        Pattern::Literal(Literal::Int(-*n))
+                    }
+                    TokenKind::Float(n) => {
+                        self.advance();
+                        Pattern::Literal(Literal::Float(-*n))
+                    }
+                    other => {
+                        return Err(ParseError::UnexpectedToken {
+                            found: other.to_string(),
+                            expected: "number after '-' in match pattern".to_string(),
+                            line: number_tok.span.line,
+                            col: number_tok.span.col,
+                        })
+                    }
+                }
+            }
             TokenKind::Float(n) => {
                 self.advance();
                 Pattern::Literal(Literal::Float(*n))
