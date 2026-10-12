@@ -2187,7 +2187,15 @@ impl Vm {
 
                     let res = match t {
                         Value::Map(m) => {
-                            if field == "len" {
+                            // T7.5 修正：**自有键优先于原型方法**。
+                            // 此前先查 `len`/`remove`/`keys`… 等方法名，导致
+                            // `{ remove: 1 }.remove` 拿到的是方法而不是 1，
+                            // 宿主模块里与原型同名的键（如 `fs.remove`）会被静默遮蔽。
+                            // 这与适配器分支的既有规则（"map 上的同名键优先"）保持一致。
+                            let own_key = m.read().unwrap().get(field).cloned();
+                            if let Some(value) = own_key {
+                                value
+                            } else if field == "len" {
                                 Value::Int(m.read().unwrap().len() as i64)
                             } else if field == "keys" {
                                 let m_clone = m.clone();

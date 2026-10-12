@@ -193,13 +193,25 @@ fn iterator_adapters_consume_iterator_state() {
 // --------------------------------------------------- 派发优先级与类型内省
 
 #[test]
-fn map_keys_win_over_new_adapter_method_names() {
-    // 适配器名字在 0.1.0 之前不存在，因此 map 上的同名键保持优先
+fn own_map_keys_win_over_method_names() {
+    // 统一规则（T7.5 修订）：map 上的**自有键优先于任何方法名**——
+    // 适配器名（map/sum/…）与原型方法名（len/keys/remove/…）一视同仁。
+    //
+    // 修订原因：此前只有适配器名让键优先，原型方法名会反过来遮蔽键，
+    // 于是 `m.remove` 与 `m["remove"]` 会给出不同结果；宿主模块里与原型同名的键
+    // （如 `fs.remove`）会被静默替换成方法。现在两者一致，且与
+    // `m["key"]` 的取值语义完全相同。
     assert_eq!(ok("{ map: 7 }.map"), Value::Int(7));
     assert_eq!(ok("{ sum: 1, a: 2 }.sum"), Value::Int(1));
-    // 既有原型方法名（len/keys/...）保持原有优先级
-    assert_eq!(ok("{ len: 9 }.len"), Value::Int(1));
-    assert_eq!(ok("{ keys: 1 }.keys()[0]"), Value::string("keys"));
+    assert_eq!(ok("{ len: 9 }.len"), Value::Int(9));
+    assert_eq!(ok("{ keys: 1 }.keys"), Value::Int(1));
+    assert_eq!(ok("{ remove: 3 }.remove"), Value::Int(3));
+
+    // 键不存在时，方法名照旧可用
+    assert_eq!(ok("{ a: 1 }.len"), Value::Int(1));
+    assert_eq!(ok("{ a: 1 }.keys()[0]"), Value::string("a"));
+    // 索引取值与字段访问在遮蔽情形下必须一致
+    assert_eq!(ok("{ len: 9 }[\"len\"]"), Value::Int(9));
 }
 
 #[test]
