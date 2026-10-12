@@ -1,0 +1,313 @@
+# Ada-D 标准库与迭代器规范 (Standard Library & Iterator Specification)
+
+> **版本**：1.0
+> **权威范围**：全局内置函数、原生模块（`json`/`math`/`time`/`sys`/`env`）、string/array/map 原型方法、**统一迭代器协议与适配器**、宿主模块扩展接口。
+> **不在此文档**：语言语法与相等/真值语义见 [SPEC_LANGUAGE.md](SPEC_LANGUAGE.md)；值的内部表示与错误类型见 [SPEC_RUNTIME.md](SPEC_RUNTIME.md)；`await_all`/`await_race` 的运行时语义见 [SPEC_ASYNC.md](SPEC_ASYNC.md)；路线图见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)。
+> **状态图例**：✅ 已实现 · ⚠️ 部分实现 / 行为与目标有偏差（附任务 ID）· 🚧 进行中 · 📋 计划中 · ❌ 不做
+
+---
+
+## 1. 设计准则
+
+1. **Token 优先**：函数名短、语义自明（`len`、`sum`、`abs`），优先链式与属性式调用（`arr.len`、`s.trim()`）。
+2. **双入口一致**：同一能力尽量同时提供**全局函数**（可被 `|>` 管道调用）与**原型方法**（可链式），例如 `sum(arr)` 与 `arr.sum()`。
+3. **权限分级**：纯计算（`json`/`math`/原型方法）默认开启；时间、环境变量等宿主能力须经 `SandboxProfile` 显式授权（当前尚未分级，见 [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型)）。
+4. **零成本对齐 Rust**：底层为原生实现，不做多余序列化（`json` 除外）。
+
+---
+
+## 2. 全局内置函数
+
+所有内置函数在 VM 初始化时注入全局作用域，无需 import，任何作用域可直接调用。
+
+### 2.1 I/O 与调试 ✅
+
+| 签名 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `print(...args)` | ✅ | 各参数 `Display` 后以**空格**连接，写 stdout，不换行 |
+| `println(...args)` | ✅ | 同上，末尾换行 |
+| `eprintln(...args)` | ✅ | 同上，写 stderr |
+
+### 2.2 类型内省 ✅
+
+| 签名 | 返回 | 说明 |
+| :--- | :--- | :--- |
+| `type_of(v)` | `string` | `"nil"` `"bool"` `"int"` `"float"` `"string"` `"array"` `"map"` `"function"` `"task"` `"iterator"` |
+| `is_nil(v)` | `bool` | 无参时返回 `true` |
+| `is_num(v)` | `bool` | `int` 或 `float` |
+| `is_str(v)` / `is_arr(v)` / `is_map(v)` / `is_fn(v)` / `is_task(v)` | `bool` | ⚠️ 缺 `is_iterator`（任务 T2.1 时一并补） |
+
+### 2.3 类型转换
+
+| 签名 | 状态 | 规则 |
+| :--- | :--- | :--- |
+| `to_int(v)` | ✅ | Int 原样；Float 截断（±inf/NaN 走 Rust 饱和转换）；Bool→1/0；String 解析十进制（失败 `nil`）；其它 → `nil` |
+| `to_float(v)` | ✅ | Float 原样；Int 提升；Bool→1.0/0.0；String 解析（失败 `nil`） |
+| `to_str(v)` | ✅ | 任意值 `Display`；⚠️ Float 输出无小数位（`to_str(1.0) == "1"`，任务 T3.6） |
+| `to_bool(v)` | ✅ | 按真值规则（见 [SPEC_LANGUAGE §9.2](SPEC_LANGUAGE.md)） |
+
+### 2.4 断言 ✅
+
+| 签名 | 行为 |
+| :--- | :--- |
+| `assert(cond, [msg])` | `cond` 为假 → 原生错误（消息默认 `"Assertion failed"`）；成功返回 `true` |
+| `assert_eq(a, b, [msg])` | 不相等 → 原生错误（默认消息含左右值 Debug）；⚠️ 使用 §9.1 的相等语义，数组/map 为引用相等 |
+
+### 2.5 数学 ✅
+
+| 签名 | 行为 | 备注 |
+| :--- | :--- | :--- |
+| `abs(x)` | Int → Int；Float → Float | ⚠️ 非数字返回 `Int(0)`（静默） |
+| `min(a, b, ...)` / `max(a, b, ...)` | 返回最小/最大值；单参数且为数组时作用于数组 | ⚠️ 不可比较的元素（非数字）被跳过；空数组返回 `nil` |
+| `clamp(x, min, max)` | 夹取；首参为 Int 则返回 Int，否则 Float | ✅ |
+| `round(x)` / `floor(x)` / `ceil(x)` | 返回 **Int** | ⚠️ 非数字返回 `Int(0)` |
+| `math.*` 高级函数 | 见 §3.2 | — |
+
+### 2.6 集合与区间
+
+| 签名 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `len(v)` | ⚠️ | Array→元素数、Map→键数、**String→字节数（应为字符数，T2.5）**、其它→0 |
+| `range(start, end, [step])` | ✅ | 返回**惰性** `iterator`；左闭右开；`step` 缺省 1；`range(n)` = `range(0, n)`；`step` 为负时倒序；`step == 0` 产生空迭代 |
+| `push(arr, v)` | ✅ | 就地向数组追加，返回 `nil`；等价 `arr.push(v)` |
+| `sum(arr)` | ✅ | 数值累加（Int 保持 Int，出现 Float 则整体 Float）；⚠️ 非数值元素**静默忽略** |
+
+### 2.7 异步原语（语法层 ✅ / 语义见 SPEC_ASYNC）
+
+| 签名 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `sleep_ms(ms)` | ⚠️ | **阻塞宿主线程** `std::thread::sleep`（目标：非阻塞，T4.3） |
+| `await_all(arr)` | ⚠️ | 遍历数组解包 `task`；当前 `spawn` 已立即求值，故等价于原样拷贝（T4.x） |
+| `await_race(arr)` | ⚠️ | 返回数组首元素解包结果，**不是"首个就绪"**（T4.5） |
+| `.timeout(ms)` | 📋 | 目标 API（T4.5），当前不存在 |
+
+---
+
+## 3. 原生模块 (Native Modules)
+
+模块是 `map` 值，属性访问即取成员，支持 `json.parse(...)` 形式调用。
+
+### 3.1 `json` ✅
+
+| API | 说明 |
+| :--- | :--- |
+| `json.parse(str)` | 反序列化为原生 Map/Array/标量；解析失败 → 原生错误 |
+| `json.stringify(v, [pretty])` | 序列化；`pretty` 为真值则缩进输出；函数/迭代器降级为字符串占位 |
+| `json.valid(str)` | 是否为合法 JSON |
+
+### 3.2 `math` ✅
+
+| API | 说明 |
+| :--- | :--- |
+| `math.PI` / `math.E` / `math.INF` | 常量（Float） |
+| `math.sqrt(x)` | 平方根；非数字按 0 处理 ⚠️ |
+| `math.pow(x, y)` | 幂；参数不足报错 |
+| `math.log(x)` / `math.log10(x)` | 自然对数 / 常用对数 |
+| `math.sin(x)` / `math.cos(x)` / `math.tan(x)` | 三角函数（弧度） |
+| `math.random()` | `[0.0, 1.0)`；线程局部 xorshift 状态，进程启动时以时间播种 |
+| `math.random_int(min, max)` | `[min, max]` 闭区间；`min >= max` 时返回 `min` |
+| 舍入函数（`round`/`floor`/`ceil`） | 以**全局函数**形式提供，不在 `math` 命名空间 ⚠️（命名不一致） |
+
+### 3.3 `time` ✅（受沙箱管控目标见 T5.1）
+
+| API | 说明 |
+| :--- | :--- |
+| `time.now_ms()` | Unix 毫秒时间戳（Int） |
+| `time.now_secs()` | Unix 秒时间戳（Int） |
+| `time.elapsed_ms(start_ms)` | 距 `start_ms` 的毫秒差；时钟回拨时返回 0 |
+
+### 3.4 `sys` / `env` ⚠️
+
+| API | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `sys.version` | ✅ | crate 版本字符串 |
+| `sys.os` / `sys.arch` | ✅ | `std::env::consts::{OS, ARCH}` |
+| `env.get(key, [default])` | ⚠️ | 读宿主环境变量；**当前无白名单**（T5.2）；未设置时返回 `default` 或 `nil` |
+| `env.has(key)` | ⚠️ | 同上，无白名单 |
+
+---
+
+## 4. 原型方法 (Prototype Methods)
+
+通过 `.` 访问内建类型的方法；**方法调用返回 `NativeFn`，需要 `()` 触发**。
+
+### 4.1 `string` ✅⚠️
+
+| 成员 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `.len` | ⚠️ | **字节数**（应为字符数，T2.5） |
+| `.len_bytes` | 📋 | 目标 API（T2.5） |
+| `.chars` | ✅ | 返回单字符数组（按 Unicode 字符切分） |
+| `.chars_with_idx` | 📋 | 目标 API（T2.3） |
+| `.lines` | ✅ | 按行切分为数组 |
+| `.trim()` | ✅ | 去首尾空白 |
+| `.to_upper()` / `.to_lower()` | ✅ | 大小写转换 |
+| `.split(sep)` | ✅ | 切分为数组，缺省分隔符为空格 |
+| `.contains(s)` / `.starts_with(s)` / `.ends_with(s)` | ✅ | 子串判断 |
+| `.replace(from, to)` | ✅ | 全部替换（参数不足报错） |
+| `.slice(start, [end])` | ✅ | **按字符**切片，支持负索引，越界自动夹取 |
+| `.iter()` / `.next()` | 📋 | 迭代器协议方法（T2.3） |
+
+### 4.2 `array` ✅⚠️
+
+| 成员 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `.len` | ✅ | 元素个数 |
+| `.push(v)` | ✅ | 就地追加，返回 `nil` |
+| `.pop()` | ✅ | 弹出末尾，空数组返回 `nil` |
+| `.insert(idx, v)` | ✅ | 指定位置插入，越界报错 |
+| `.remove(idx)` | ✅ | 按下标移除并返回移除值，越界报错 |
+| `.contains(v)` | ✅ | 使用 §9.1 相等语义（⚠️ 嵌套容器为引用比较） |
+| `.reverse()` | ✅ | **就地**反转，返回 `nil` |
+| `.rev()` | ✅ | 返回**新数组**（逆序拷贝，非惰性） |
+| `.sort()` | ✅ | 就地排序；数字类型混合按数值，字符串按字典序，其它类型视为相等（不稳定） ⚠️ |
+| `.sum()` | ✅ | 数值累加；非数值元素静默忽略 ⚠️ |
+| `.enumerate()` | ✅ | 返回 `[[0, v0], [1, v1], ...]` 新数组 |
+| `.join(sep)` | ✅ | 拼接字符串，缺省分隔符 `","` |
+| `.await_all()` | ⚠️ | 见 §2.7 |
+| `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | 📋 | **全部缺失**，任务 T2.1（当前访问返回 `nil`，调用报 `NotCallable`） |
+| `.iter()` / `.next()` | 📋 | T2.3 |
+
+### 4.3 `map` ✅⚠️
+
+| 成员 | 状态 | 行为 |
+| :--- | :--- | :--- |
+| `.len` | ✅ | 键值对数量 |
+| `.keys()` / `.values()` | ✅ | 返回数组；⚠️ **顺序不保证**（底层 `HashMap`） |
+| `.entries()` | ✅ | 返回 `[[k, v], ...]`；⚠️ 顺序不保证 |
+| `.contains_key(k)` | ✅ | 键存在性 |
+| `.remove(k)` | ✅ | 删除并返回旧值，缺失返回 `nil` |
+| `.merge(other)` | ✅ | 就地覆盖合并，返回 `nil` |
+| `.get(k)` / `.has(k)` | 📋 | 可用属性访问/`contains_key` 替代，暂不新增 |
+| `.iter()` / `.next()` | 📋 | T2.3 |
+
+### 4.4 未知成员的访问语义 ⚠️
+
+访问不存在或未实现的方法时，`array`/`string` 的字段查询返回 `nil`（不报错），随后调用触发 `NotCallable(nil)`。nil 目标上的非可选访问报 `TypeError`。任务 T3.7 将补测试固化该口径。
+
+---
+
+## 5. 统一迭代器协议
+
+### 5.1 目标 ✅（`for..in` 层面已统一）
+
+任何可迭代对象都能直接用于 `for`，编译为 `IterInit` → 循环头 `IterNext`（字节码细节见 [SPEC_RUNTIME §3](SPEC_RUNTIME.md#3-字节码指令集)）。
+
+| 迭代源 | 元素 | 状态 |
+| :--- | :--- | :--- |
+| `array` | 元素本身 | ✅ |
+| `string` | 单个 Unicode 字符（1 字符串） | ✅ |
+| `map` | `[key, value]` 二元数组（配合 `for [k, v] in m` 解构） | ✅（⚠️ 顺序不保证） |
+| `iterator`（如 `range(...)`） | 迭代器产出值 | ✅（原样透传） |
+| `int n` | `0, 1, ..., n-1`（等价 `range(n)`） | ✅ |
+| 其它任何值 | **单元素序列**（只迭代一次） | ⚠️ 静默，不报错 |
+
+```ada
+for fruit in ["apple", "banana"] { ... }         // 元素
+for ch in "Ada 语言" { ... }                     // 字符
+for [k, v] in { a: 1, b: 2 } { ... }             // 解构
+for i in range(0, 10, 2) { ... }                 // 惰性区间
+for i in 5 { ... }                               // 0..4
+for [idx, item] in [10, 20].enumerate() { ... }  // 带索引
+```
+
+### 5.2 惰性区间 `range` ✅
+
+- **不预分配数组**，内存 `O(1)`，状态机为 `{current, end, step}`。
+- 左闭右开：`range(0, 5)` → `0,1,2,3,4`；`range(5, 0, -1)` → `5,4,3,2,1`（实测）。
+- `range` 返回值的 `type_of` 为 `"iterator"`。
+- ⚠️ `iterator` 目前**没有任何方法**（不能 `.map()`/`.take()`/`.collect()`），也不能直接 `println` 出内容（显示为 `<iterator>`）。这是"惰性优先"设计落地的主要缺口（T2.1/T2.3）。
+
+### 5.3 迭代器状态机（类型）
+
+| 变体 | 字段 | 来源 |
+| :--- | :--- | :--- |
+| `Array` | `items, index` | 数组（快照拷贝，迭代中修改原数组不影响本轮） |
+| `String` | `chars, index` | 字符串 |
+| `Map` | `entries, index` | 字典（快照） |
+| `Range` | `current, end, step` | `range(...)` 或 `for i in n` |
+
+---
+
+## 6. 迭代器适配器
+
+**目标形态** 📋（任务 T2.1；求值策略由决策 D3 决定：先做即时版，再评估惰性链）。当前**全部未实现**：白皮书与本文档历史版本中的 `arr |> filter(...) |> map(...)` 示例在 0.1.0 上会报 `UndefinedGlobal("filter")`。
+
+| 适配器 | 参数 | 返回（惰性目标） | 功能 | 状态 |
+| :--- | :--- | :--- | :--- | :--- |
+| `.map(f)` | `f: (T) -> R` | `Iterator<R>` | 元素映射 | 📋 |
+| `.filter(f)` | `f: (T) -> bool` | `Iterator<T>` | 谓词过滤 | 📋 |
+| `.take(n)` | `n: int` | `Iterator<T>` | 截取前 n 个 | 📋 |
+| `.skip(n)` | `n: int` | `Iterator<T>` | 跳过前 n 个 | 📋 |
+| `.enumerate()` | — | `Iterator<[int, T]>` | 附加索引 | ✅（仅数组，且已物化为数组） |
+| `.collect()` | — | `Array` | 消费并聚合 | 📋 |
+| `.count()` | — | `int` | 元素计数 | 📋 |
+| `.sum()` | — | `num` | 数值求和 | ✅（仅数组） |
+| `.find(f)` | `f: (T) -> bool` | `T \| nil` | 首个满足项 | 📋 |
+| `.any(f)` / `.all(f)` | `f: (T) -> bool` | `bool` | 存在性 / 全称判断 | 📋 |
+| `.join(sep)` | `sep: string` | `string` | 拼接 | ✅（仅数组） |
+| `.iter()` / `.next()` | — | `Iterator` / `T \| 终止` | 显式迭代协议 | 📋（T2.3） |
+
+### 6.1 目标示例（实现后必须通过，作为 golden 用例）
+
+```ada
+let result = range(1, 1000)
+    |> filter(x => x % 2 != 0)
+    |> map(x => x * x)
+    |> take(5)
+    |> sum()
+assert_eq(result, 165)   // 1 + 9 + 25 + 49 + 81
+```
+
+> ⚠️ 该示例的成立依赖两项前置：**闭包可捕获外层变量**（T2.2，否则 `x` 之外的上下文无法引用）与**适配器自身实现**（T2.1）。这也是为什么 T2.1 与 T2.2 同列 P1。
+
+### 6.2 双入口约定 📋
+
+为了让 `|>` 与链式调用都自然，适配器须同时存在于两个位置：
+
+- 全局函数：`filter(arr, f)`、`map(arr, f)`、`sum(arr)` …（供 `arr |> filter(f)` 脱糖为 `filter(arr, f)`）。
+- 原型方法：`arr.filter(f)` …（供链式）。
+
+`sum` 已同时具备（§2.6 + §4.2），其余适配器按此模式补齐。
+
+---
+
+## 7. 宿主模块扩展接口
+
+**目标形态** 📋（任务 T5.5）：
+
+```rust
+pub trait NativeModule: Send + Sync {
+    /// 模块名（如 "crypto"、"fs"）
+    fn name(&self) -> &str;
+    /// 导出函数表
+    fn exports(&self) -> HashMap<String, Value>;
+}
+
+// 宿主侧
+engine.register_module(MyToolModule::new());
+```
+
+要求：
+
+1. 注册的模块受 `SandboxProfile` 管控（`Strict` 默认不加载宿主模块）。
+2. 模块函数不得 panic；返回 `Err(String)` 由 VM 包装为 `NativeError`。
+3. 模块必须可跨线程（`Send + Sync`），因为 VM 允许在不同线程的独立实例中运行。
+
+---
+
+## 8. 缺口汇总（与任务对应）
+
+| ID | 缺口 | 状态 | 任务 |
+| :--- | :--- | :--- | :--- |
+| G-S1 | 迭代器适配器全族缺失（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`） | 📋 | T2.1 / D3 |
+| G-S2 | `string.len` 与 `len()` 返回字节数 | ⚠️ | T2.5 |
+| G-S3 | `iterator` 无任何方法，无法链式消费 | 📋 | T2.3 |
+| G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ⚠️ | T4.3 / T4.5 |
+| G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ⚠️ | T5.1 / T5.2 |
+| G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ | T3.5 统一错误口径 |
+| G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |
+| G-S8 | map 迭代/`keys()`/`entries()` 顺序不保证（`HashMap`） | ⚠️ | 规范明示；如需稳定顺序见 D6 |
+| G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ⚠️ | T3.6 |
+| G-S10 | 缺失 `is_iterator` | ⚠️ | T2.1 |
+| G-S11 | `NativeModule` 与模块注册接口不存在 | 📋 | T5.5 |

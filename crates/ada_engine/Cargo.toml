@@ -1,0 +1,16 @@
+[package]
+name = "ada_engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ada_ast = { path = "../ada_ast" }
+ada_lexer = { path = "../ada_lexer" }
+ada_parser = { path = "../ada_parser" }
+ada_bytecode = { path = "../ada_bytecode" }
+ada_vm = { path = "../ada_vm" }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+

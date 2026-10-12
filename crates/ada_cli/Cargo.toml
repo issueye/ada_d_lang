@@ -1,0 +1,14 @@
+[package]
+name = "ada_cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ada_engine = { path = "../ada_engine" }
+ada_parser = { path = "../ada_parser" }
+ada_bytecode = { path = "../ada_bytecode" }
+clap = { workspace = true }
+rustyline = { workspace = true }
+

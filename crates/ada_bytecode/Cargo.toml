@@ -1,0 +1,14 @@
+[package]
+name = "ada_bytecode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+ada_ast = { path = "../ada_ast" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+ada_parser = { path = "../ada_parser" }
+
