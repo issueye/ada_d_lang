@@ -22,6 +22,92 @@ impl fmt::Debug for Closure {
     }
 }
 
+/// VM 内建的高阶迭代器适配器（T2.1）。
+///
+/// 之所以放在 VM 而不是 `builtins`：适配器必须回调**脚本函数**（闭包），
+/// 而 `NativeFn` 的回调签名只能拿到 `&[Value]`，无法访问虚拟机去压栈执行。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterKind {
+    Map,
+    Filter,
+    Take,
+    Skip,
+    Collect,
+    Count,
+    Find,
+    Any,
+    All,
+    Enumerate,
+    Rev,
+    Join,
+    Sum,
+}
+
+impl AdapterKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            AdapterKind::Map => "map",
+            AdapterKind::Filter => "filter",
+            AdapterKind::Take => "take",
+            AdapterKind::Skip => "skip",
+            AdapterKind::Collect => "collect",
+            AdapterKind::Count => "count",
+            AdapterKind::Find => "find",
+            AdapterKind::Any => "any",
+            AdapterKind::All => "all",
+            AdapterKind::Enumerate => "enumerate",
+            AdapterKind::Rev => "rev",
+            AdapterKind::Join => "join",
+            AdapterKind::Sum => "sum",
+        }
+    }
+
+    /// 方法形式 `.map(...)` 的名字识别（T2.1）。
+    pub fn from_method(field: &str) -> Option<Self> {
+        AdapterKind::all()
+            .iter()
+            .copied()
+            .find(|k| k.name() == field)
+    }
+
+    pub fn all() -> &'static [AdapterKind] {
+        &[
+            AdapterKind::Map,
+            AdapterKind::Filter,
+            AdapterKind::Take,
+            AdapterKind::Skip,
+            AdapterKind::Collect,
+            AdapterKind::Count,
+            AdapterKind::Find,
+            AdapterKind::Any,
+            AdapterKind::All,
+            AdapterKind::Enumerate,
+            AdapterKind::Rev,
+            AdapterKind::Join,
+            AdapterKind::Sum,
+        ]
+    }
+
+    /// 该适配器接受的实参个数（**包含**可迭代值本身），`None` 表示无上界。
+    pub fn arity(self) -> (usize, Option<usize>) {
+        match self {
+            AdapterKind::Map
+            | AdapterKind::Filter
+            | AdapterKind::Find
+            | AdapterKind::Take
+            | AdapterKind::Skip
+            | AdapterKind::Any
+            | AdapterKind::All => (2, Some(2)),
+            AdapterKind::Join => (1, Some(2)),
+            AdapterKind::Collect
+            | AdapterKind::Count
+            | AdapterKind::Enumerate
+            | AdapterKind::Rev
+            | AdapterKind::Sum => (1, Some(1)),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Value {
     Nil,
@@ -35,6 +121,13 @@ pub enum Value {
     NativeFn {
         name: String,
         callback: NativeCallback,
+    },
+    /// 迭代器适配器（T2.1）：全局形式 `map(xs, f)` 与绑定形式 `xs.map(f)` 共用。
+    /// `receiver` 为方法形式的接收者，`args` 为已绑定的额外实参。
+    Intrinsic {
+        kind: AdapterKind,
+        receiver: Option<Box<Value>>,
+        args: Vec<Value>,
     },
     Task(Arc<RwLock<Value>>),
     Iterator(Arc<RwLock<IteratorState>>),
@@ -96,6 +189,42 @@ impl Value {
         matches!(self, Value::Nil)
     }
 
+    /// 未绑定的适配器（全局函数形式）。
+    pub fn intrinsic(kind: AdapterKind) -> Self {
+        Value::Intrinsic {
+            kind,
+            receiver: None,
+            args: Vec::new(),
+        }
+    }
+
+    /// 绑定接收者（方法形式 `xs.map`）。
+    pub fn with_receiver(self, receiver: Value) -> Self {
+        match self {
+            Value::Intrinsic { kind, args, .. } => Value::Intrinsic {
+                kind,
+                receiver: Some(Box::new(receiver)),
+                args,
+            },
+            other => other,
+        }
+    }
+
+    pub fn adapter_kind(&self) -> Option<AdapterKind> {
+        match self {
+            Value::Intrinsic { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
+
+    /// 是否为可迭代值（`for..in` 与适配器都接受这些类型）。
+    pub fn is_iterable(&self) -> bool {
+        matches!(
+            self,
+            Value::Array(_) | Value::String(_) | Value::Map(_) | Value::Iterator(_) | Value::Int(_)
+        )
+    }
+
     pub fn is_truthy(&self) -> bool {
         match self {
             Value::Nil => false,
@@ -150,6 +279,9 @@ impl Value {
             }
             Value::Task(t) => t.read().unwrap().to_json(),
             Value::Iterator(_) => serde_json::Value::String("<iterator>".into()),
+            Value::Intrinsic { kind, .. } => {
+                serde_json::Value::String(format!("<adapter {}>", kind.name()))
+            }
         }
     }
 
@@ -199,6 +331,7 @@ impl PartialEq for Value {
                 Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
             }
             (Value::Iterator(a), Value::Iterator(b)) => Arc::ptr_eq(a, b),
+            (Value::Intrinsic { kind: a, .. }, Value::Intrinsic { kind: b, .. }) => a == b,
             _ => false,
         }
     }
@@ -224,6 +357,7 @@ impl fmt::Debug for Value {
             Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
             Value::Task(t) => write!(f, "Task({:?})", t.read().unwrap()),
             Value::Iterator(it) => write!(f, "Iterator({:?})", it.read().unwrap()),
+            Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
         }
     }
 }
@@ -262,6 +396,7 @@ impl fmt::Display for Value {
             Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
             Value::Task(t) => write!(f, "<task {}>", t.read().unwrap()),
             Value::Iterator(_) => write!(f, "<iterator>"),
+            Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
         }
     }
 }

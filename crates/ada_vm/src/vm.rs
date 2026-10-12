@@ -1,4 +1,4 @@
-use crate::value::{Closure, IteratorState, Value};
+use crate::value::{AdapterKind, Closure, IteratorState, Value};
 use ada_bytecode::{Constant, FunctionProto, Instruction};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +44,41 @@ fn shift_err(op: &str) -> VmError {
     ))
 }
 
+/// 数值求和（全局 `sum` / `.sum()` / 迭代器适配器共用）。
+///
+/// 全整数保持 Int；出现 Float 则整体 Float；非数值元素忽略（与既有 `sum` 行为一致）。
+/// 整数累加使用 checked 运算，溢出返回错误而不是 panic。
+fn sum_values(items: &[Value]) -> Result<Value, VmError> {
+    let mut is_float = false;
+    let mut int_sum: i64 = 0;
+    let mut float_sum = 0.0f64;
+    for item in items {
+        match item {
+            Value::Int(n) => {
+                if is_float {
+                    float_sum += *n as f64;
+                } else {
+                    int_sum = int_sum.checked_add(*n).ok_or_else(|| overflow_err("sum"))?;
+                }
+            }
+            Value::Float(f) => {
+                if is_float {
+                    float_sum += *f;
+                } else {
+                    is_float = true;
+                    float_sum = int_sum as f64 + *f;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(if is_float {
+        Value::Float(float_sum)
+    } else {
+        Value::Int(int_sum)
+    })
+}
+
 struct CallFrame {
     proto: Arc<FunctionProto>,
     ip: usize,
@@ -55,7 +90,10 @@ pub struct Vm {
     registers: Vec<Value>,
     frames: Vec<CallFrame>,
     globals: HashMap<String, Value>,
+    /// 配置的燃料预算（每次 `execute` 重新装填）
     fuel: Option<u64>,
+    /// 当前这次执行中剩余的燃料
+    fuel_remaining: Option<u64>,
 }
 
 impl Default for Vm {
@@ -71,6 +109,7 @@ impl Vm {
             frames: Vec::new(),
             globals: HashMap::new(),
             fuel: None,
+            fuel_remaining: None,
         };
         vm.register_builtins();
         vm
@@ -78,10 +117,22 @@ impl Vm {
 
     pub fn set_fuel(&mut self, fuel: Option<u64>) {
         self.fuel = fuel;
+        self.fuel_remaining = fuel;
     }
 
+    /// 配置的燃料预算（不是剩余量）。
     pub fn get_fuel(&self) -> Option<u64> {
         self.fuel
+    }
+
+    /// 当前这次执行剩余的燃料。
+    pub fn remaining_fuel(&self) -> Option<u64> {
+        self.fuel_remaining
+    }
+
+    /// 把剩余燃料重置为配置的预算。
+    pub fn reset_fuel(&mut self) {
+        self.fuel_remaining = self.fuel;
     }
 
     pub fn set_global(&mut self, name: impl Into<String>, val: Value) {
@@ -111,13 +162,278 @@ impl Vm {
             dst_reg: None,
         });
 
+        // T2.6：每次执行都从配置的预算重新装填燃料，
+        // 因此一次 OutOfFuel 不会让同一个 Vm 永久失效。
+        self.reset_fuel();
+
         self.run_loop()
     }
 
+    /// 以给定实参调用任意可调用值（T2.1）。
+    ///
+    /// 与 `Instruction::Call` 不同，这里允许**可重入**调用：为闭包压入一个合成帧后
+    /// 用 `run_loop_until(stop_depth)` 继续执行，返回后把帧栈与寄存器窗口恢复原状。
+    fn call_callable(&mut self, callee: &Value, args: &[Value]) -> Result<Value, VmError> {
+        match callee {
+            Value::Closure(closure) => {
+                let expected = closure.proto.arity;
+                if expected as usize != args.len() {
+                    return Err(VmError::ArityMismatch {
+                        expected,
+                        got: args.len() as u16,
+                    });
+                }
+                if self.frames.len() >= 512 {
+                    return Err(VmError::StackOverflow);
+                }
+                let base = self.registers.len();
+                let needed = base + closure.proto.register_count as usize + 1;
+                self.registers.resize(needed, Value::Nil);
+                for (i, arg) in args.iter().enumerate() {
+                    self.registers[base + i] = arg.clone();
+                }
+                self.frames.push(CallFrame {
+                    proto: closure.proto.clone(),
+                    ip: 0,
+                    base_reg: base,
+                    dst_reg: None,
+                });
+                let stop_depth = self.frames.len() - 1;
+                let result = self.run_loop_until(stop_depth);
+                // 成功或出错都要清理：否则错误会把合成帧留在栈上
+                while self.frames.len() > stop_depth {
+                    self.frames.pop();
+                }
+                self.registers.truncate(base);
+                result
+            }
+            Value::NativeFn { callback, .. } => callback(args).map_err(VmError::NativeError),
+            Value::Intrinsic {
+                kind,
+                receiver,
+                args: bound,
+            } => {
+                let mut effective = Vec::with_capacity(args.len() + bound.len() + 1);
+                if let Some(receiver) = receiver {
+                    effective.push((**receiver).clone());
+                }
+                effective.extend(bound.iter().cloned());
+                effective.extend(args.iter().cloned());
+                self.invoke_adapter(*kind, &effective)
+            }
+            other => Err(VmError::NotCallable(other.clone())),
+        }
+    }
+
+    /// 由任意可迭代值构建迭代器状态（`for..in`、`.iter()` 与适配器共用）。
+    fn make_iterator(val: &Value) -> IteratorState {
+        match val {
+            Value::Array(arr) => IteratorState::Array {
+                items: arr.read().unwrap().clone(),
+                index: 0,
+            },
+            Value::String(s) => IteratorState::String {
+                chars: s.chars().collect(),
+                index: 0,
+            },
+            Value::Map(m) => IteratorState::Map {
+                entries: m
+                    .read()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                index: 0,
+            },
+            Value::Int(n) => IteratorState::Range {
+                current: 0,
+                end: *n,
+                step: 1,
+            },
+            other => IteratorState::Array {
+                items: vec![other.clone()],
+                index: 0,
+            },
+        }
+    }
+
+    /// 迭代器推进一步；耗尽返回 `None`。
+    fn iterator_next(state: &mut IteratorState) -> Option<Value> {
+        match state {
+            IteratorState::Array { items, index } => {
+                let item = items.get(*index).cloned();
+                if item.is_some() {
+                    *index += 1;
+                }
+                item
+            }
+            IteratorState::String { chars, index } => {
+                let ch = chars.get(*index).copied();
+                match ch {
+                    Some(ch) => {
+                        *index += 1;
+                        Some(Value::string(ch.to_string()))
+                    }
+                    None => None,
+                }
+            }
+            IteratorState::Map { entries, index } => {
+                let entry = entries.get(*index).cloned();
+                match entry {
+                    Some((key, value)) => {
+                        *index += 1;
+                        Some(Value::array(vec![Value::string(key), value]))
+                    }
+                    None => None,
+                }
+            }
+            IteratorState::Range { current, end, step } => {
+                if (*step > 0 && *current < *end) || (*step < 0 && *current > *end) {
+                    let value = *current;
+                    *current += *step;
+                    Some(Value::Int(value))
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// 物化任意可迭代值。
+    ///
+    /// 适配器当前为**即时求值**（决策 D3 = A：先可用，惰性留待后续）；
+    /// 对 `Iterator` 会消耗其状态（与 `.next()` 语义一致）。
+    fn collect_iterable(&self, src: &Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        if let Value::Iterator(it) = src {
+            let mut state = it.write().unwrap();
+            while let Some(value) = Vm::iterator_next(&mut state) {
+                out.push(value);
+            }
+            return out;
+        }
+        let mut state = Vm::make_iterator(src);
+        while let Some(value) = Vm::iterator_next(&mut state) {
+            out.push(value);
+        }
+        out
+    }
+
+    /// 执行迭代器适配器（T2.1）：`args[0]` 恒为可迭代值，其余按适配器语义解释。
+    fn invoke_adapter(&mut self, kind: AdapterKind, args: &[Value]) -> Result<Value, VmError> {
+        let name = kind.name();
+        let (min, max) = kind.arity();
+        if args.len() < min || max.is_some_and(|max| args.len() > max) {
+            let expected = match max {
+                Some(max) if max == min => min.to_string(),
+                Some(max) => format!("{min}..{max}"),
+                None => format!("{min}+"),
+            };
+            return Err(VmError::NativeError(format!(
+                "{name} expects {expected} argument(s) including the iterable, got {}",
+                args.len()
+            )));
+        }
+
+        let items = self.collect_iterable(&args[0]);
+        match kind {
+            AdapterKind::Map => {
+                let f = &args[1];
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.call_callable(f, &[item])?);
+                }
+                Ok(Value::array(out))
+            }
+            AdapterKind::Filter => {
+                let f = &args[1];
+                let mut out = Vec::new();
+                for item in items {
+                    if self
+                        .call_callable(f, std::slice::from_ref(&item))?
+                        .is_truthy()
+                    {
+                        out.push(item);
+                    }
+                }
+                Ok(Value::array(out))
+            }
+            AdapterKind::Take => {
+                let n = args[1].as_int().unwrap_or(0).max(0) as usize;
+                Ok(Value::array(items.into_iter().take(n).collect()))
+            }
+            AdapterKind::Skip => {
+                let n = args[1].as_int().unwrap_or(0).max(0) as usize;
+                Ok(Value::array(items.into_iter().skip(n).collect()))
+            }
+            AdapterKind::Collect => Ok(Value::array(items)),
+            AdapterKind::Count => Ok(Value::Int(items.len() as i64)),
+            AdapterKind::Find => {
+                let f = &args[1];
+                for item in items {
+                    if self
+                        .call_callable(f, std::slice::from_ref(&item))?
+                        .is_truthy()
+                    {
+                        return Ok(item);
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            AdapterKind::Any => {
+                let f = &args[1];
+                for item in items {
+                    if self.call_callable(f, &[item])?.is_truthy() {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Ok(Value::Bool(false))
+            }
+            AdapterKind::All => {
+                let f = &args[1];
+                for item in items {
+                    if !self.call_callable(f, &[item])?.is_truthy() {
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
+            AdapterKind::Enumerate => Ok(Value::array(
+                items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, value)| Value::array(vec![Value::Int(i as i64), value]))
+                    .collect(),
+            )),
+            AdapterKind::Rev => {
+                let mut items = items;
+                items.reverse();
+                Ok(Value::array(items))
+            }
+            AdapterKind::Join => {
+                let sep = args
+                    .get(1)
+                    .map(|a| a.to_string())
+                    .unwrap_or_else(|| ",".to_string());
+                let parts: Vec<String> = items.iter().map(|item| item.to_string()).collect();
+                Ok(Value::string(parts.join(&sep)))
+            }
+            AdapterKind::Sum => sum_values(&items),
+        }
+    }
+
+    /// 从当前帧继续执行，直到帧栈回落到 `stop_depth`（`execute` 传 0）。
+    ///
+    /// 这让 VM 内部（迭代器适配器 T2.1）能够**可重入地**调用脚本闭包：
+    /// 压入一个合成帧后，以 `stop_depth = frames.len() - 1` 再次进入执行循环。
     fn run_loop(&mut self) -> Result<Value, VmError> {
+        self.run_loop_until(0)
+    }
+
+    fn run_loop_until(&mut self, stop_depth: usize) -> Result<Value, VmError> {
         loop {
             // Check Fuel
-            if let Some(ref mut fuel) = self.fuel {
+            if let Some(ref mut fuel) = self.fuel_remaining {
                 if *fuel == 0 {
                     return Err(VmError::OutOfFuel);
                 }
@@ -133,7 +449,7 @@ impl Vm {
                 if let Some(dst) = frame.dst_reg {
                     self.registers[dst] = Value::Nil;
                 }
-                if self.frames.is_empty() {
+                if self.frames.len() == stop_depth {
                     return Ok(Value::Nil);
                 }
                 continue;
@@ -496,6 +812,13 @@ impl Vm {
                             let res = callback(args).map_err(VmError::NativeError)?;
                             self.registers[base + dst.0 as usize] = res;
                         }
+                        Value::Intrinsic { .. } => {
+                            let start = base + arg_start.0 as usize;
+                            let end = start + arg_count as usize;
+                            let args = self.registers[start..end].to_vec();
+                            let res = self.call_callable(&callee_val, &args)?;
+                            self.registers[base + dst.0 as usize] = res;
+                        }
                         other => return Err(VmError::NotCallable(other)),
                     }
                 }
@@ -512,7 +835,7 @@ impl Vm {
                         self.registers[dest] = ret_val.clone();
                     }
 
-                    if self.frames.is_empty() {
+                    if self.frames.len() == stop_depth {
                         return Ok(ret_val);
                     }
                 }
@@ -623,6 +946,34 @@ impl Vm {
                 } => {
                     let t = &self.registers[base + target.0 as usize];
                     let field = &self.frames[frame_idx].proto.names[field_idx as usize];
+
+                    // T2.1：迭代器适配器的方法形式（`xs.map(f)`）。
+                    // 先于原型方法派发；map 类型上的同名键优先（这些名字属纯新增，不构成回归）。
+                    if let Some(kind) = AdapterKind::from_method(field) {
+                        if t.is_iterable() {
+                            if let Value::Map(m) = t {
+                                let existing = m.read().unwrap().get(field).cloned();
+                                if let Some(value) = existing {
+                                    self.registers[base + dst.0 as usize] = value;
+                                    continue;
+                                }
+                            }
+                            self.registers[base + dst.0 as usize] =
+                                Value::intrinsic(kind).with_receiver(t.clone());
+                            continue;
+                        }
+                    }
+
+                    // T2.3：显式迭代协议 `.iter()`（与其它原型方法一致，返回可调用的零参方法）
+                    if field == "iter" && t.is_iterable() {
+                        let iter = match t {
+                            Value::Iterator(it) => Value::Iterator(it.clone()),
+                            other => Value::iterator(Vm::make_iterator(other)),
+                        };
+                        self.registers[base + dst.0 as usize] =
+                            Value::native_fn("iter", move |_| Ok(iter.clone()));
+                        continue;
+                    }
 
                     let res = match t {
                         Value::Map(m) => {
@@ -770,71 +1121,6 @@ impl Vm {
                                     });
                                     Ok(Value::Nil)
                                 })
-                            } else if field == "sum" {
-                                let arr_clone = arr.clone();
-                                Value::native_fn("sum", move |_| {
-                                    let items = arr_clone.read().unwrap();
-                                    let mut is_float = false;
-                                    let mut int_sum = 0i64;
-                                    let mut float_sum = 0.0f64;
-                                    for item in items.iter() {
-                                        match item {
-                                            Value::Int(n) => {
-                                                if is_float {
-                                                    float_sum += *n as f64;
-                                                } else {
-                                                    int_sum += *n;
-                                                }
-                                            }
-                                            Value::Float(f) => {
-                                                if !is_float {
-                                                    is_float = true;
-                                                    float_sum = int_sum as f64 + *f;
-                                                } else {
-                                                    float_sum += *f;
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    if is_float {
-                                        Ok(Value::Float(float_sum))
-                                    } else {
-                                        Ok(Value::Int(int_sum))
-                                    }
-                                })
-                            } else if field == "enumerate" {
-                                let arr_clone = arr.clone();
-                                Value::native_fn("enumerate", move |_| {
-                                    let items = arr_clone.read().unwrap();
-                                    let mut enumerated = Vec::with_capacity(items.len());
-                                    for (idx, item) in items.iter().enumerate() {
-                                        enumerated.push(Value::array(vec![
-                                            Value::Int(idx as i64),
-                                            item.clone(),
-                                        ]));
-                                    }
-                                    Ok(Value::array(enumerated))
-                                })
-                            } else if field == "rev" {
-                                let arr_clone = arr.clone();
-                                Value::native_fn("rev", move |_| {
-                                    let mut items = arr_clone.read().unwrap().clone();
-                                    items.reverse();
-                                    Ok(Value::array(items))
-                                })
-                            } else if field == "join" {
-                                let arr_clone = arr.clone();
-                                Value::native_fn("join", move |args| {
-                                    let sep = args
-                                        .first()
-                                        .map(|a| a.to_string())
-                                        .unwrap_or_else(|| ",".to_string());
-                                    let items = arr_clone.read().unwrap();
-                                    let s: Vec<String> =
-                                        items.iter().map(|it| it.to_string()).collect();
-                                    Ok(Value::string(s.join(&sep)))
-                                })
                             } else if field == "await_all" {
                                 let arr_clone = arr.clone();
                                 Value::native_fn("await_all", move |_| {
@@ -861,6 +1147,20 @@ impl Vm {
                                 let chars: Vec<Value> =
                                     s.chars().map(|c| Value::string(c.to_string())).collect();
                                 Value::native_fn("chars", move |_| Ok(Value::array(chars.clone())))
+                            } else if field == "chars_with_idx" {
+                                let chars: Vec<Value> = s
+                                    .chars()
+                                    .enumerate()
+                                    .map(|(i, c)| {
+                                        Value::array(vec![
+                                            Value::Int(i as i64),
+                                            Value::string(c.to_string()),
+                                        ])
+                                    })
+                                    .collect();
+                                Value::native_fn("chars_with_idx", move |_| {
+                                    Ok(Value::array(chars.clone()))
+                                })
                             } else if field == "lines" {
                                 let lines: Vec<Value> = s.lines().map(Value::string).collect();
                                 Value::native_fn("lines", move |_| Ok(Value::array(lines.clone())))
@@ -957,6 +1257,17 @@ impl Vm {
                                 Value::Nil
                             }
                         }
+                        Value::Iterator(it) => {
+                            if field == "next" {
+                                let it_clone = it.clone();
+                                Value::native_fn("next", move |_| {
+                                    let mut state = it_clone.write().unwrap();
+                                    Ok(Vm::iterator_next(&mut state).unwrap_or(Value::Nil))
+                                })
+                            } else {
+                                Value::Nil
+                            }
+                        }
                         Value::Nil => {
                             if optional {
                                 Value::Nil
@@ -1021,39 +1332,12 @@ impl Vm {
 
                 Instruction::IterInit { dst, src } => {
                     let val = self.registers[base + src.0 as usize].clone();
-                    let it_state = match val {
-                        Value::Array(arr) => {
-                            let items = arr.read().unwrap().clone();
-                            IteratorState::Array { items, index: 0 }
-                        }
-                        Value::String(s) => {
-                            let chars = s.chars().collect();
-                            IteratorState::String { chars, index: 0 }
-                        }
-                        Value::Map(m) => {
-                            let entries: Vec<(String, Value)> = m
-                                .read()
-                                .unwrap()
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-                            IteratorState::Map { entries, index: 0 }
-                        }
-                        Value::Int(n) => IteratorState::Range {
-                            current: 0,
-                            end: n,
-                            step: 1,
-                        },
-                        Value::Iterator(it) => {
-                            self.registers[base + dst.0 as usize] = Value::Iterator(it);
-                            continue;
-                        }
-                        _ => IteratorState::Array {
-                            items: vec![val],
-                            index: 0,
-                        },
+                    let iter = match val {
+                        // 已是迭代器：原样传递（消费语义与 `.next()` 一致）
+                        Value::Iterator(it) => Value::Iterator(it),
+                        other => Value::iterator(Vm::make_iterator(&other)),
                     };
-                    self.registers[base + dst.0 as usize] = Value::iterator(it_state);
+                    self.registers[base + dst.0 as usize] = iter;
                 }
 
                 Instruction::IterNext { dst, iter, offset } => {
@@ -1061,39 +1345,9 @@ impl Vm {
                     let mut advanced = false;
                     if let Value::Iterator(it) = it_val {
                         let mut state = it.write().unwrap();
-                        match &mut *state {
-                            IteratorState::Array { items, index } => {
-                                if *index < items.len() {
-                                    self.registers[base + dst.0 as usize] = items[*index].clone();
-                                    *index += 1;
-                                    advanced = true;
-                                }
-                            }
-                            IteratorState::String { chars, index } => {
-                                if *index < chars.len() {
-                                    self.registers[base + dst.0 as usize] =
-                                        Value::string(chars[*index].to_string());
-                                    *index += 1;
-                                    advanced = true;
-                                }
-                            }
-                            IteratorState::Map { entries, index } => {
-                                if *index < entries.len() {
-                                    let (k, v) = &entries[*index];
-                                    self.registers[base + dst.0 as usize] =
-                                        Value::array(vec![Value::string(k.clone()), v.clone()]);
-                                    *index += 1;
-                                    advanced = true;
-                                }
-                            }
-                            IteratorState::Range { current, end, step } => {
-                                if (*step > 0 && *current < *end) || (*step < 0 && *current > *end)
-                                {
-                                    self.registers[base + dst.0 as usize] = Value::Int(*current);
-                                    *current += *step;
-                                    advanced = true;
-                                }
-                            }
+                        if let Some(value) = Vm::iterator_next(&mut state) {
+                            self.registers[base + dst.0 as usize] = value;
+                            advanced = true;
                         }
                     }
                     if !advanced {
