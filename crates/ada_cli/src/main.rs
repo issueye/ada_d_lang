@@ -1,5 +1,5 @@
 use ada_bytecode::Compiler;
-use ada_engine::Engine;
+use ada_engine::{Engine, Sandbox};
 use ada_parser::Parser;
 use clap::{Parser as ClapParser, Subcommand};
 use rustyline::error::ReadlineError;
@@ -25,6 +25,10 @@ struct Cli {
     /// Evaluate code directly from string (e.g. `ada -e "1 + 2"`)
     #[arg(short = 'e', long = "eval")]
     eval: Option<String>,
+
+    /// Use the strict sandbox (no time/env/sys/sleep_ms; memory & wall-clock limits)
+    #[arg(long = "strict", global = true)]
+    strict: bool,
 }
 
 #[derive(Subcommand)]
@@ -50,22 +54,29 @@ enum Commands {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let sandbox = if cli.strict {
+        Sandbox::strict()
+    } else {
+        // CLI 是本地受信工具：默认 standard（time/sys/env 白名单/sleep 可用），
+        // 但对宿主环境变量仍然只放行显式白名单。
+        Sandbox::standard()
+    };
 
     if let Some(code) = cli.eval {
-        run_code(&code)?;
+        run_code(&code, &sandbox)?;
         return Ok(());
     }
 
     match cli.command {
-        Some(Commands::Run { file }) => run_file(&file)?,
-        Some(Commands::Eval { code }) => run_code(&code)?,
+        Some(Commands::Run { file }) => run_file(&file, &sandbox)?,
+        Some(Commands::Eval { code }) => run_code(&code, &sandbox)?,
         Some(Commands::Dump { file }) => dump_bytecode(&file)?,
-        Some(Commands::Repl) => run_repl()?,
+        Some(Commands::Repl) => run_repl(&sandbox)?,
         None => {
             if let Some(file) = cli.file {
-                run_file(&file)?;
+                run_file(&file, &sandbox)?;
             } else {
-                run_repl()?;
+                run_repl(&sandbox)?;
             }
         }
     }
@@ -73,14 +84,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_file(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+fn run_file(path: &PathBuf, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Error>> {
     let source = fs::read_to_string(path)?;
-    run_code(&source)?;
+    run_code(&source, sandbox)?;
     Ok(())
 }
 
-fn run_code(source: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let mut engine = Engine::new();
+fn run_code(source: &str, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = Engine::with_sandbox(sandbox.clone());
     let val = engine.eval_value(source)?;
     if !val.is_nil() {
         println!("{val}");
@@ -111,12 +122,12 @@ fn dump_bytecode(path: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run_repl() -> Result<(), Box<dyn std::error::Error>> {
+fn run_repl(sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Error>> {
     println!("Ada-D 0.1.0 Interactive REPL");
     println!("Type 'exit' or press Ctrl+D to quit.\n");
 
     let mut rl = DefaultEditor::new()?;
-    let mut engine = Engine::new();
+    let mut engine = Engine::with_sandbox(sandbox.clone());
 
     loop {
         let readline = rl.readline("ada> ");

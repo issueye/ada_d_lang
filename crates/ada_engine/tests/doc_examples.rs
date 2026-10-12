@@ -115,7 +115,10 @@ fn spec_stdlib_json_example() {
 fn spec_stdlib_math_and_time_examples() {
     assert_eq!(eval_i64("to_int(math.sqrt(256.0))"), 16);
     assert_eq!(eval_i64("to_int(math.pow(2.0, 8.0))"), 256);
-    assert_eq!(eval_string("sys.os"), std::env::consts::OS);
+    // M5：`sys` 属于宿主能力，默认 strict 沙箱不暴露，需显式选择 profile
+    let mut engine = Engine::with_sandbox(ada_engine::Sandbox::standard());
+    let os: String = engine.eval("sys.os").unwrap();
+    assert_eq!(os, std::env::consts::OS);
 }
 
 #[test]

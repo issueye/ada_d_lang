@@ -1,5 +1,6 @@
 use crate::value::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub fn create_sys_module() -> Value {
     let mut module = HashMap::new();
@@ -19,32 +20,46 @@ pub fn create_sys_module() -> Value {
     Value::map(module)
 }
 
-pub fn create_env_module() -> Value {
+pub fn create_env_module(allowlist: &[String]) -> Value {
     let mut module = HashMap::new();
+    let allowlist: Arc<Vec<String>> = Arc::new(allowlist.to_vec());
+
+    // M5 / T5.2：未列入白名单的键**不读宿主环境**，直接返回 nil / false
+    let allowed = allowlist.clone();
+    module.insert(
+        "allowed".to_string(),
+        Value::native_fn("env.allowed", move |_| {
+            Ok(Value::array(
+                allowed.iter().map(|k| Value::string(k.clone())).collect(),
+            ))
+        }),
+    );
 
     // env.get(key, [default]) -> string or default or nil
+    let allowed = allowlist.clone();
     module.insert(
         "get".to_string(),
-        Value::native_fn("env.get", |args| {
+        Value::native_fn("env.get", move |args| {
             let key = args.first().map(|a| a.to_string()).unwrap_or_default();
+            if !allowed.contains(&key) {
+                return Ok(args.get(1).cloned().unwrap_or(Value::Nil));
+            }
             match std::env::var(&key) {
                 Ok(val) => Ok(Value::string(val)),
-                Err(_) => {
-                    if let Some(default_val) = args.get(1) {
-                        Ok(default_val.clone())
-                    } else {
-                        Ok(Value::Nil)
-                    }
-                }
+                Err(_) => Ok(args.get(1).cloned().unwrap_or(Value::Nil)),
             }
         }),
     );
 
     // env.has(key) -> bool
+    let allowed = allowlist;
     module.insert(
         "has".to_string(),
-        Value::native_fn("env.has", |args| {
+        Value::native_fn("env.has", move |args| {
             let key = args.first().map(|a| a.to_string()).unwrap_or_default();
+            if !allowed.contains(&key) {
+                return Ok(Value::Bool(false));
+            }
             Ok(Value::Bool(std::env::var(&key).is_ok()))
         }),
     );

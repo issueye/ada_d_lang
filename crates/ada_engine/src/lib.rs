@@ -3,7 +3,11 @@ use ada_parser::Parser;
 // 公共 re-export：宿主只需依赖 ada_engine 即可命名 Value 与各类错误类型（T0.7）
 pub use ada_bytecode::CompileError;
 pub use ada_parser::ParseError;
-pub use ada_vm::{Closure, NativeCallback, Value, Vm, VmError};
+pub use ada_vm::{
+    AsyncKind, Closure, NativeCallback, ProfileKind, Sandbox, TaskCell, TaskState, Value, Vm,
+    VmError,
+};
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -19,6 +23,24 @@ pub enum Error {
 
     #[error("Type conversion error: {0}")]
     Conversion(String),
+
+    #[error("Module '{0}' is already registered")]
+    ModuleConflict(String),
+}
+
+/// 宿主自定义原生模块（M5 / T5.5）。
+///
+/// 实现后通过 [`Engine::register_module`] 注册；脚本侧表现为一个 `map` 值，
+/// 因此 `mymod.fn(args)` 与 `mymod.fn` 取函数引用都可用。
+///
+/// 模块是**宿主显式授予的能力**，因此不受沙箱 profile 限制（沙箱限制的是
+/// AdA-D 自带模块）；宿主可自行决定暴露什么。
+pub trait NativeModule: Send + Sync {
+    /// 模块名（脚本里的全局名）
+    fn name(&self) -> &str;
+
+    /// 模块暴露的函数：`(函数名, 实现)`
+    fn functions(&self) -> Vec<(String, NativeCallback)>;
 }
 
 pub trait FromValue: Sized {
@@ -80,8 +102,62 @@ impl Default for Engine {
 }
 
 impl Engine {
+    /// 默认引擎：**strict 沙箱**（M5 / T5.1）——只有纯计算 + `json`/`math`，
+    /// 隐藏 `time`/`env`/`sys`/`sleep_ms`，并施加内存/墙钟/任务数上限。
+    ///
+    /// 需要宿主能力时显式选择 [`Engine::with_sandbox`]：
+    /// `Engine::with_sandbox(Sandbox::standard())` 或按需构造
+    /// `Sandbox::strict().with_env_keys(["HOME"]).with_wall_clock_limit(Some(10_000))`。
     pub fn new() -> Self {
-        Self { vm: Vm::new() }
+        Self::with_sandbox(Sandbox::strict())
+    }
+
+    /// 用给定沙箱配置构建引擎。
+    pub fn with_sandbox(sandbox: Sandbox) -> Self {
+        Self {
+            vm: Vm::with_sandbox(sandbox),
+        }
+    }
+
+    /// 不做能力/资源限制（等效 M5 之前的行为；仅用于受信场景与测试）。
+    pub fn permissive() -> Self {
+        Self::with_sandbox(Sandbox::permissive())
+    }
+
+    /// 当前沙箱配置。
+    pub fn sandbox(&self) -> &Sandbox {
+        self.vm.sandbox()
+    }
+
+    /// 重新配置沙箱（会重建全局表，脚本写入的全局会丢失）。
+    pub fn set_sandbox(&mut self, sandbox: Sandbox) {
+        self.vm.set_sandbox(sandbox);
+    }
+
+    /// 本次求值已计费的近似内存字节数（M5 / T5.3）。
+    pub fn memory_used(&self) -> usize {
+        self.vm.memory_used()
+    }
+
+    /// 注册一个宿主原生模块（M5 / T5.5）。
+    pub fn register_module<M: NativeModule + 'static>(&mut self, module: M) -> Result<(), Error> {
+        let name = module.name().to_string();
+        if self.vm.get_global(&name).is_some() {
+            return Err(Error::ModuleConflict(name));
+        }
+        let mut map = HashMap::new();
+        for (fname, callback) in module.functions() {
+            let qualified = format!("{name}.{fname}");
+            map.insert(
+                fname,
+                Value::NativeFn {
+                    name: qualified,
+                    callback,
+                },
+            );
+        }
+        self.vm.set_global(name, Value::map(map));
+        Ok(())
     }
 
     pub fn set_fuel(&mut self, fuel: Option<u64>) {

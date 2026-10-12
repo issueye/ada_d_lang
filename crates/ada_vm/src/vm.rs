@@ -1,3 +1,4 @@
+use crate::sandbox::Sandbox;
 use crate::task::{
     AwaitMode, PendingResume, ResumeSource, SavedExecution, Scheduler, Suspend, TaskId, TaskState,
     MAIN_TASK,
@@ -47,6 +48,94 @@ pub enum VmError {
 
     #[error("Deadlock: all remaining tasks are waiting and no task can make progress")]
     TaskDeadlock,
+
+    /// 沙箱未开放该宿主能力（M5 / T5.1）。
+    #[error("Capability '{name}' is not available in the '{profile}' sandbox profile")]
+    CapabilityDenied { name: String, profile: &'static str },
+
+    /// 超出内存预算（M5 / T5.3，近似计量）。
+    #[error("Memory limit exceeded: {requested} bytes charged, limit is {limit} bytes")]
+    MemoryLimitExceeded { limit: usize, requested: usize },
+
+    /// 超出单次求值的墙钟预算（M5 / T5.4）。
+    #[error("Wall-clock limit exceeded: evaluation ran longer than {limit_ms} ms")]
+    WallClockLimitExceeded { limit_ms: u64 },
+
+    /// 超出并发任务数上限（M5 / T5.3）。
+    #[error("Task limit exceeded: at most {limit} tasks may be alive at once")]
+    TaskLimitExceeded { limit: usize },
+}
+
+/// 每个 `Value` 元素的近似内存开销（容器/迭代器物化按此计费）。
+const VALUE_BYTES: usize = std::mem::size_of::<Value>();
+/// 每个任务的近似开销（`TaskCell` + 现场结构，不含其寄存器窗口）。
+const TASK_BYTES: usize = 512;
+/// 每多少条指令检查一次墙钟预算（子毫秒粒度，避免每次指令都取时钟）。
+const WALL_CLOCK_CHECK_INTERVAL: u64 = 4096;
+
+/// 近似内存预算（M5 / T5.3）。
+///
+/// 指令循环与原生原型方法（`push`/`split`…）共用同一个计数器，
+/// 因此"循环里 `push` 一百万次"和"一条 `collect()`"都会被拒绝。
+#[derive(Clone, Default)]
+pub(crate) struct MemoryBudget {
+    limit: Option<usize>,
+    used: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl MemoryBudget {
+    fn with_limit(limit: Option<usize>) -> Self {
+        Self {
+            limit,
+            used: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn set_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
+        self.reset();
+    }
+
+    fn limit(&self) -> Option<usize> {
+        self.limit
+    }
+
+    fn reset(&self) {
+        self.used.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 计费；超限返回错误消息（供无法访问 VM 的原生闭包使用）。
+    fn charge_msg(&self, bytes: usize) -> Result<(), String> {
+        let Some(limit) = self.limit else {
+            return Ok(());
+        };
+        let previous = self
+            .used
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        let used = previous.saturating_add(bytes);
+        if used > limit {
+            return Err(format!(
+                "memory limit exceeded: {used} bytes charged, limit is {limit} bytes"
+            ));
+        }
+        Ok(())
+    }
+
+    /// 预检查（不改变计数）。
+    fn ensure_fits(&self, bytes: usize) -> Result<(), (usize, usize)> {
+        let Some(limit) = self.limit else {
+            return Ok(());
+        };
+        let needed = self.used().saturating_add(bytes);
+        if needed > limit {
+            return Err((limit, needed));
+        }
+        Ok(())
+    }
 }
 
 /// 整数算术溢出（含 `i64::MIN` 取负、`i64::MIN % -1` 这类 checked 边界）统一转为
@@ -136,6 +225,16 @@ pub struct Vm {
     suspend_request: Option<Suspend>,
     /// 挂起后恢复时要补做的动作（结果写回）
     pending_resume: Option<PendingResume>,
+    /// 沙箱配置（M5）：能力开关 + 资源限额
+    sandbox: Sandbox,
+    /// 被沙箱拒绝的全局名（存在但不暴露，访问时报 `CapabilityDenied`）
+    denied_globals: Vec<String>,
+    /// 本次执行已计费的近似字节数（M5 / T5.3，与原型方法共享计数器）
+    budget: MemoryBudget,
+    /// 本次执行的起始时刻（M5 / T5.4）
+    exec_started: std::time::Instant,
+    /// 距离上次墙钟检查经过的指令数
+    steps_since_clock_check: u64,
 }
 
 impl Default for Vm {
@@ -145,21 +244,119 @@ impl Default for Vm {
 }
 
 impl Vm {
+    /// 原始 VM：注册全部内置（等效旧的"无沙箱"行为）。
+    ///
+    /// 需要最小权限时用 [`Vm::with_sandbox`]；嵌入门面 `Engine::new()` 默认走 strict。
     pub fn new() -> Self {
+        Self::with_sandbox(Sandbox::permissive())
+    }
+
+    /// 按沙箱配置构建 VM（M5 / T5.1）：只注册被允许的内置模块与全局。
+    pub fn with_sandbox(sandbox: Sandbox) -> Self {
         let mut vm = Self {
             registers: vec![Value::Nil; 2048],
             frames: Vec::new(),
             globals: HashMap::new(),
-            fuel: None,
-            fuel_remaining: None,
+            fuel: sandbox.fuel,
+            fuel_remaining: sandbox.fuel,
             scheduler: Scheduler::new(),
             current_task: MAIN_TASK,
             rust_depth: 0,
             suspend_request: None,
             pending_resume: None,
+            sandbox,
+            denied_globals: Vec::new(),
+            budget: MemoryBudget::with_limit(None),
+            exec_started: std::time::Instant::now(),
+            steps_since_clock_check: 0,
         };
-        vm.register_builtins();
+        vm.apply_sandbox();
         vm
+    }
+
+    /// 当前沙箱配置。
+    pub fn sandbox(&self) -> &Sandbox {
+        &self.sandbox
+    }
+
+    /// 重新按当前沙箱配置构建全局表（会丢弃脚本写入的全局）。
+    fn apply_sandbox(&mut self) {
+        self.globals.clear();
+        self.denied_globals.clear();
+        self.budget.set_limit(self.sandbox.max_memory_bytes);
+        crate::builtins::register_all(&mut self.globals, &self.sandbox);
+        for name in ["time", "env", "sys", "sleep_ms"] {
+            if !self.sandbox.allows_global(name) {
+                self.denied_globals.push(name.to_string());
+            }
+        }
+    }
+
+    /// 切换沙箱配置并重建全局表（宿主在 `eval` 之间调用）。
+    pub fn set_sandbox(&mut self, sandbox: Sandbox) {
+        self.sandbox = sandbox;
+        self.set_fuel(self.sandbox.fuel);
+        self.apply_sandbox();
+    }
+
+    // ------------------------------------------------------- 资源限额
+
+    /// 计入一次分配；超出预算返回 `MemoryLimitExceeded`（M5 / T5.3）。
+    fn charge(&mut self, bytes: usize) -> Result<(), VmError> {
+        match self.budget.charge_msg(bytes) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(VmError::MemoryLimitExceeded {
+                limit: self.budget.limit().unwrap_or(0),
+                requested: self.budget.used(),
+            }),
+        }
+    }
+
+    /// 按元素个数计费。
+    fn charge_items(&mut self, count: usize) -> Result<(), VmError> {
+        self.charge(count.saturating_mul(VALUE_BYTES))
+    }
+
+    /// 物化前的预检查：`count` 个元素的容器是否放得下（避免先分配再报错）。
+    fn ensure_items_fit(&self, count: usize) -> Result<(), VmError> {
+        match self.budget.ensure_fits(count.saturating_mul(VALUE_BYTES)) {
+            Ok(()) => Ok(()),
+            Err((limit, requested)) => Err(VmError::MemoryLimitExceeded { limit, requested }),
+        }
+    }
+
+    /// 已计费的近似内存用量（诊断与测试）。
+    pub fn memory_used(&self) -> usize {
+        self.budget.used()
+    }
+
+    /// 检查墙钟预算（M5 / T5.4）。
+    fn check_wall_clock(&self) -> Result<(), VmError> {
+        let Some(limit_ms) = self.sandbox.max_wall_clock_ms else {
+            return Ok(());
+        };
+        if self.exec_started.elapsed().as_millis() as u64 >= limit_ms {
+            return Err(VmError::WallClockLimitExceeded { limit_ms });
+        }
+        Ok(())
+    }
+
+    /// 距离墙钟预算耗尽还剩多少毫秒（`None` = 不限）。
+    fn remaining_wall_clock_ms(&self) -> Option<u64> {
+        let limit_ms = self.sandbox.max_wall_clock_ms?;
+        let elapsed = self.exec_started.elapsed().as_millis() as u64;
+        Some(limit_ms.saturating_sub(elapsed))
+    }
+
+    /// 并发任务上限检查（M5 / T5.3）。
+    fn check_task_limit(&self) -> Result<(), VmError> {
+        let Some(limit) = self.sandbox.max_tasks else {
+            return Ok(());
+        };
+        if self.scheduler.live_tasks() + 1 > limit {
+            return Err(VmError::TaskLimitExceeded { limit });
+        }
+        Ok(())
     }
 
     pub fn set_fuel(&mut self, fuel: Option<u64>) {
@@ -190,10 +387,6 @@ impl Vm {
         self.globals.get(name)
     }
 
-    fn register_builtins(&mut self) {
-        crate::builtins::register_all(&mut self.globals);
-    }
-
     pub fn execute(&mut self, proto: FunctionProto) -> Result<Value, VmError> {
         let proto = Arc::new(proto);
         let needed_regs = proto.register_count as usize;
@@ -220,6 +413,11 @@ impl Vm {
         self.rust_depth = 0;
         self.suspend_request = None;
         self.pending_resume = None;
+
+        // M5：资源计量按"每次求值"重新开始
+        self.budget.reset();
+        self.exec_started = std::time::Instant::now();
+        self.steps_since_clock_check = 0;
 
         let outcome = self.drive_current();
         self.run_scheduler(SchedulerGoal::MainDone, None, Some(outcome))
@@ -376,20 +574,53 @@ impl Vm {
     ///
     /// 适配器当前为**即时求值**（决策 D3 = A：先可用，惰性留待后续）；
     /// 对 `Iterator` 会消耗其状态（与 `.next()` 语义一致）。
-    fn collect_iterable(&self, src: &Value) -> Vec<Value> {
+    /// 预估值物化后的元素个数（M5：用于内存预检查，避免"先分配再报错"）。
+    fn estimated_len(src: &Value) -> Option<usize> {
+        match src {
+            // `for i in N` / 适配器作用于整数：迭代 0..N
+            Value::Int(n) if *n >= 0 => Some(*n as usize),
+            Value::Array(a) => Some(a.read().unwrap().len()),
+            Value::Map(m) => Some(m.read().unwrap().len()),
+            Value::String(s) => Some(s.chars().count()),
+            Value::Iterator(it) => match &*it.read().unwrap() {
+                IteratorState::Range { current, end, step } => {
+                    if *step == 0 {
+                        return Some(0);
+                    }
+                    let remaining = if *step > 0 {
+                        (*end - *current).max(0)
+                    } else {
+                        (*current - *end).max(0)
+                    };
+                    let stride = step.abs();
+                    Some(((remaining + stride - 1) / stride) as usize)
+                }
+                IteratorState::Array { items, index } => Some(items.len().saturating_sub(*index)),
+                IteratorState::String { chars, index } => Some(chars.len().saturating_sub(*index)),
+                IteratorState::Map { entries, index } => Some(entries.len().saturating_sub(*index)),
+            },
+            _ => None,
+        }
+    }
+
+    fn collect_iterable(&mut self, src: &Value) -> Result<Vec<Value>, VmError> {
+        if let Some(count) = Self::estimated_len(src) {
+            self.ensure_items_fit(count)?;
+            self.charge_items(count)?;
+        }
         let mut out = Vec::new();
         if let Value::Iterator(it) = src {
             let mut state = it.write().unwrap();
             while let Some(value) = Vm::iterator_next(&mut state) {
                 out.push(value);
             }
-            return out;
+            return Ok(out);
         }
         let mut state = Vm::make_iterator(src);
         while let Some(value) = Vm::iterator_next(&mut state) {
             out.push(value);
         }
-        out
+        Ok(out)
     }
 
     /// 执行迭代器适配器（T2.1）：`args[0]` 恒为可迭代值，其余按适配器语义解释。
@@ -408,7 +639,7 @@ impl Vm {
             )));
         }
 
-        let items = self.collect_iterable(&args[0]);
+        let items = self.collect_iterable(&args[0])?;
         match kind {
             AdapterKind::Map => {
                 let f = &args[1];
@@ -471,13 +702,17 @@ impl Vm {
                 }
                 Ok(Value::Bool(true))
             }
-            AdapterKind::Enumerate => Ok(Value::array(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, value)| Value::array(vec![Value::Int(i as i64), value]))
-                    .collect(),
-            )),
+            AdapterKind::Enumerate => {
+                // M5：`enumerate` 会额外构造 N 个二元数组，按元素计费
+                self.charge_items(items.len())?;
+                Ok(Value::array(
+                    items
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, value)| Value::array(vec![Value::Int(i as i64), value]))
+                        .collect(),
+                ))
+            }
             AdapterKind::Rev => {
                 let mut items = items;
                 items.reverse();
@@ -489,7 +724,10 @@ impl Vm {
                     .map(|a| a.to_string())
                     .unwrap_or_else(|| ",".to_string());
                 let parts: Vec<String> = items.iter().map(|item| item.to_string()).collect();
-                Ok(Value::string(parts.join(&sep)))
+                let joined = parts.join(&sep);
+                // M5：拼接结果是新分配的字符串，按字节计费
+                self.charge(joined.len())?;
+                Ok(Value::string(joined))
             }
             AdapterKind::Sum => sum_values(&items),
         }
@@ -652,9 +890,20 @@ impl Vm {
                         return Err(VmError::TaskDeadlock);
                     };
                     let now = Self::now_ms();
-                    if deadline > now {
-                        std::thread::sleep(std::time::Duration::from_millis(deadline - now));
+                    let mut wait_ms = deadline.saturating_sub(now);
+                    // M5：等待也计入墙钟预算（既不能靠 sleep 逃逸，也不能睡过头）
+                    if let Some(remaining) = self.remaining_wall_clock_ms() {
+                        if remaining == 0 {
+                            return Err(VmError::WallClockLimitExceeded {
+                                limit_ms: self.sandbox.max_wall_clock_ms.unwrap_or(0),
+                            });
+                        }
+                        wait_ms = wait_ms.min(remaining);
                     }
+                    if wait_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                    }
+                    self.check_wall_clock()?;
                     self.scheduler.wake_due(Self::now_ms());
                 }
             }
@@ -1201,6 +1450,13 @@ impl Vm {
                 *fuel -= 1;
             }
 
+            // M5：墙钟预算（每 4096 条指令检查一次，避免每条指令都取时钟）
+            self.steps_since_clock_check += 1;
+            if self.steps_since_clock_check >= WALL_CLOCK_CHECK_INTERVAL {
+                self.steps_since_clock_check = 0;
+                self.check_wall_clock()?;
+            }
+
             let frame_idx = self.frames.len() - 1;
             let ip = self.frames[frame_idx].ip;
 
@@ -1260,8 +1516,17 @@ impl Vm {
                         (Value::Float(x), Value::Float(y)) => Value::Float(x + y),
                         (Value::Int(x), Value::Float(y)) => Value::Float(*x as f64 + y),
                         (Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
-                        (Value::String(x), y) => Value::string(format!("{x}{y}")),
-                        (x, Value::String(y)) => Value::string(format!("{x}{y}")),
+                        // 字符串拼接：`s += x` 走的就是这条路径，因此必须计费（M5）
+                        (Value::String(x), y) => {
+                            let joined = format!("{x}{y}");
+                            self.charge(joined.len())?;
+                            Value::string(joined)
+                        }
+                        (x, Value::String(y)) => {
+                            let joined = format!("{x}{y}");
+                            self.charge(joined.len())?;
+                            Value::string(joined)
+                        }
                         _ => return Err(VmError::TypeError(format!("Cannot add {a:?} and {b:?}"))),
                     };
                     self.registers[base + dst.0 as usize] = res;
@@ -1611,6 +1876,12 @@ impl Vm {
                     let name = &self.frames[frame_idx].proto.names[name_idx as usize];
                     if let Some(val) = self.globals.get(name) {
                         self.registers[base + dst.0 as usize] = val.clone();
+                    } else if self.denied_globals.contains(name) {
+                        // M5：能力被沙箱关闭时给出可区分的错误，而不是"未定义"
+                        return Err(VmError::CapabilityDenied {
+                            name: name.clone(),
+                            profile: self.sandbox.kind.name(),
+                        });
                     } else {
                         return Err(VmError::UndefinedGlobal(name.clone()));
                     }
@@ -1623,6 +1894,9 @@ impl Vm {
                 }
 
                 Instruction::NewArray { dst, start, count } => {
+                    // M5：物化前预检查，避免"先分配再报错"
+                    self.ensure_items_fit(count as usize)?;
+                    self.charge_items(count as usize)?;
                     let mut items = Vec::with_capacity(count as usize);
                     for i in 0..count as usize {
                         items.push(self.registers[base + start.0 as usize + i].clone());
@@ -1635,15 +1909,18 @@ impl Vm {
                 }
 
                 Instruction::MapSet { map, key, val } => {
-                    let map_val = &self.registers[base + map.0 as usize];
-                    let key_val = &self.registers[base + key.0 as usize];
+                    // M5：字典写入按"键长 + 一个元素"计费（先取所有权，避免借用冲突）
+                    let map_val = self.registers[base + map.0 as usize].clone();
+                    let key_val = self.registers[base + key.0 as usize].clone();
                     let v = self.registers[base + val.0 as usize].clone();
 
-                    if let Value::Map(m) = map_val {
-                        let k = key_val.to_string();
-                        m.write().unwrap().insert(k, v);
-                    } else {
-                        return Err(VmError::TypeError("MapSet on non-map".into()));
+                    match map_val {
+                        Value::Map(m) => {
+                            let k = key_val.to_string();
+                            self.charge(k.len() + VALUE_BYTES)?;
+                            m.write().unwrap().insert(k, v);
+                        }
+                        _ => return Err(VmError::TypeError("MapSet on non-map".into())),
                     }
                 }
 
@@ -1706,8 +1983,12 @@ impl Vm {
                             }
                         }
                         (Value::Map(m), key) => {
-                            let mut map = m.write().unwrap();
-                            map.insert(key.to_string(), v);
+                            // M5：字典写入按"键长 + 一个元素"计费
+                            // （先取出所有权，避免与 charge 的可变借用冲突）
+                            let map = m.clone();
+                            let key_str = key.to_string();
+                            self.charge(key_str.len() + VALUE_BYTES)?;
+                            map.write().unwrap().insert(key_str, v);
                         }
                         _ => return Err(VmError::TypeError("Cannot set index on target".into())),
                     }
@@ -1841,8 +2122,11 @@ impl Vm {
                                 Value::Int(arr.read().unwrap().len() as i64)
                             } else if field == "push" {
                                 let arr_clone = arr.clone();
+                                // M5：原型方法无法访问 VM，因此共享同一个内存预算计数器
+                                let budget = self.budget.clone();
                                 Value::native_fn("push", move |args| {
                                     if let Some(item) = args.first() {
+                                        budget.charge_msg(VALUE_BYTES)?;
                                         arr_clone.write().unwrap().push(item.clone());
                                     }
                                     Ok(Value::Nil)
@@ -1855,10 +2139,12 @@ impl Vm {
                                 })
                             } else if field == "insert" {
                                 let arr_clone = arr.clone();
+                                let budget = self.budget.clone();
                                 Value::native_fn("insert", move |args| {
                                     if args.len() < 2 {
                                         return Err("insert expects (index, value)".into());
                                     }
+                                    budget.charge_msg(VALUE_BYTES)?;
                                     let idx = args[0].as_int().ok_or("insert: index must be int")?
                                         as usize;
                                     let val = args[1].clone();
@@ -1970,6 +2256,7 @@ impl Vm {
                                 })
                             } else if field == "split" {
                                 let s_clone = s.clone();
+                                let budget = self.budget.clone();
                                 Value::native_fn("split", move |args| {
                                     let sep = args
                                         .first()
@@ -1977,6 +2264,7 @@ impl Vm {
                                         .unwrap_or_else(|| " ".to_string());
                                     let parts: Vec<Value> =
                                         s_clone.split(&sep).map(Value::string).collect();
+                                    budget.charge_msg(parts.len().saturating_mul(VALUE_BYTES))?;
                                     Ok(Value::array(parts))
                                 })
                             } else if field == "contains" {
@@ -2094,6 +2382,8 @@ impl Vm {
                     for i in 0..count as usize {
                         s.push_str(&self.registers[base + start.0 as usize + i].to_string());
                     }
+                    // M5：字符串拼接是脚本侧最主要的放大路径，按字节计费
+                    self.charge(s.len())?;
                     self.registers[base + dst.0 as usize] = Value::string(s);
                 }
 
@@ -2177,6 +2467,9 @@ impl Vm {
                     arg_count,
                 } => {
                     // T4.1：这里**不执行**被 spawn 的调用，只登记任务
+                    // M5：并发任务数与任务本身的开销都受限
+                    self.check_task_limit()?;
+                    self.charge(TASK_BYTES)?;
                     let callee_val = self.registers[base + callee.0 as usize].clone();
                     let mut args = Vec::with_capacity(arg_count as usize);
                     for i in 0..arg_count as usize {

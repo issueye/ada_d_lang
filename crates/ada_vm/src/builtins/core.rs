@@ -1,7 +1,8 @@
+use crate::sandbox::Sandbox;
 use crate::value::{AdapterKind, AsyncKind, IteratorState, Value};
 use std::collections::HashMap;
 
-pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
+pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &Sandbox) {
     // -------------------------------------------------------------
     // 1. I/O & Debugging
     // -------------------------------------------------------------
@@ -444,12 +445,15 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
 
     // -------------------------------------------------------------
     // 7. Async Primitives（M4：由 VM 调度器实现，可挂起）
+    //    M5：`sleep_ms` 会占用宿主墙钟，因此在沙箱中被 `allow_sleep` 控制
     // -------------------------------------------------------------
     let async_op = |kind| Value::Async {
         kind,
         receiver: None,
     };
-    globals.insert("sleep_ms".to_string(), async_op(AsyncKind::Sleep));
+    if sandbox.allow_sleep {
+        globals.insert("sleep_ms".to_string(), async_op(AsyncKind::Sleep));
+    }
     globals.insert("yield_now".to_string(), async_op(AsyncKind::YieldNow));
     globals.insert("await_all".to_string(), async_op(AsyncKind::AwaitAll));
     globals.insert("await_any".to_string(), async_op(AsyncKind::AwaitAny));

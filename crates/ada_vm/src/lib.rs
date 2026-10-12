@@ -1,8 +1,10 @@
 pub mod builtins;
+pub mod sandbox;
 pub mod task;
 pub mod value;
 pub mod vm;
 
+pub use sandbox::{ProfileKind, Sandbox};
 pub use task::{TaskCell, TaskState};
 pub use value::{AsyncKind, Closure, NativeCallback, Value};
 pub use vm::{Vm, VmError};
