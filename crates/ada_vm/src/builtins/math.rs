@@ -122,9 +122,10 @@ pub fn create_math_module() -> Value {
             if min >= max {
                 return Ok(Value::Int(min));
             }
-            let span = (max - min + 1) as u64;
-            let val = min + (next_random_u64() % span) as i64;
-            Ok(Value::Int(val))
+            // 用 i128 计算区间宽度：i64 全域输入也不会溢出 panic
+            let span = (max as i128 - min as i128 + 1) as u128;
+            let offset = (next_random_u64() as u128) % span;
+            Ok(Value::Int((min as i128 + offset as i128) as i64))
         }),
     );
 

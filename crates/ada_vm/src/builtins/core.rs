@@ -1,4 +1,4 @@
-use crate::value::{IteratorState, Value};
+use crate::value::{AdapterKind, IteratorState, Value};
 use std::collections::HashMap;
 
 pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
@@ -49,7 +49,7 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 Value::String(_) => "string",
                 Value::Array(_) => "array",
                 Value::Map(_) => "map",
-                Value::Closure(_) | Value::NativeFn { .. } => "function",
+                Value::Closure(_) | Value::NativeFn { .. } | Value::Intrinsic { .. } => "function",
                 Value::Task(_) => "task",
                 Value::Iterator(_) => "iterator",
             };
@@ -101,7 +101,7 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
         Value::native_fn("is_fn", |args| {
             let is_fn = matches!(
                 args.first(),
-                Some(Value::Closure(_) | Value::NativeFn { .. })
+                Some(Value::Closure(_) | Value::NativeFn { .. } | Value::Intrinsic { .. })
             );
             Ok(Value::Bool(is_fn))
         }),
@@ -112,6 +112,14 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
         Value::native_fn("is_task", |args| {
             let is_task = matches!(args.first(), Some(Value::Task(_)));
             Ok(Value::Bool(is_task))
+        }),
+    );
+
+    globals.insert(
+        "is_iterator".to_string(),
+        Value::native_fn("is_iterator", |args| {
+            let is_iterator = matches!(args.first(), Some(Value::Iterator(_)));
+            Ok(Value::Bool(is_iterator))
         }),
     );
 
@@ -226,7 +234,10 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
     globals.insert(
         "abs".to_string(),
         Value::native_fn("abs", |args| match args.first() {
-            Some(Value::Int(n)) => Ok(Value::Int(n.abs())),
+            Some(Value::Int(n)) => n
+                .checked_abs()
+                .map(Value::Int)
+                .ok_or_else(|| "abs: integer overflow (i64::MIN)".to_string()),
             Some(Value::Float(f)) => Ok(Value::Float(f.abs())),
             _ => Ok(Value::Int(0)),
         }),
@@ -416,50 +427,6 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
         }),
     );
 
-    globals.insert(
-        "sum".to_string(),
-        Value::native_fn("sum", |args| {
-            if args.is_empty() {
-                return Ok(Value::Int(0));
-            }
-            if let Value::Array(arr) = &args[0] {
-                let items = arr.read().unwrap();
-                let mut is_float = false;
-                let mut int_sum = 0i64;
-                let mut float_sum = 0.0f64;
-
-                for item in items.iter() {
-                    match item {
-                        Value::Int(n) => {
-                            if is_float {
-                                float_sum += *n as f64;
-                            } else {
-                                int_sum += *n;
-                            }
-                        }
-                        Value::Float(f) => {
-                            if !is_float {
-                                is_float = true;
-                                float_sum = int_sum as f64 + *f;
-                            } else {
-                                float_sum += *f;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                if is_float {
-                    Ok(Value::Float(float_sum))
-                } else {
-                    Ok(Value::Int(int_sum))
-                }
-            } else {
-                Err("sum called on non-array".to_string())
-            }
-        }),
-    );
-
     // -------------------------------------------------------------
     // 7. Async Primitives
     // -------------------------------------------------------------
@@ -516,4 +483,15 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
             }
         }),
     );
+}
+
+/// 注册迭代器适配器（T2.1）为全局函数，使管道形式可用：
+/// `xs |> filter(f) |> map(g) |> take(3) |> collect()`。
+///
+/// 方法形式（`xs.filter(f)`）由 VM 的字段派发绑定接收者，见 `Vm::invoke_adapter`。
+/// 这些名字会覆盖 `register_core_globals` 中同名的原生实现（如旧的 `sum`）。
+pub fn register_iterator_adapters(globals: &mut HashMap<String, Value>) {
+    for kind in AdapterKind::all() {
+        globals.insert(kind.name().to_string(), Value::intrinsic(*kind));
+    }
 }
