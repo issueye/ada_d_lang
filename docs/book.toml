@@ -1,0 +1,18 @@
+[book]
+title = "Ada-D（Ada Script）语言文档"
+authors = ["Ada-D Team"]
+description = "AI 优先的可嵌入脚本语言：语言规范、运行时、标准库、异步并发与沙箱"
+language = "zh-CN"
+src = "."
+
+[build]
+# 输出到 target/ 下，避免污染 docs/ 源目录（也就不需要 .gitignore 例外）
+build-dir = "../target/mdbook"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = "https://example.com/ada-d"
+edit-url-template = "https://example.com/ada-d/edit/main/docs/{path}"
+
+[output.html.search]
+limit-results = 20

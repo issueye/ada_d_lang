@@ -35,6 +35,28 @@ jobs:
       - name: Tests (cargo test --workspace)
         run: cargo test --workspace
 
+  docs-site:
+    name: Documentation site (T7.3)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install mdbook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.4.40"
+
+      # 目录完整性 + 真实构建（docs_site.rs 在有 mdbook 时会强制构建成功）
+      - name: Summary completeness and site build
+        run: cargo test -p ada_cli --test docs_site -- --nocapture
+
   benchmarks:
     name: Benchmarks (T6.1 / T6.5)
     runs-on: ubuntu-latest
