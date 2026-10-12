@@ -184,6 +184,33 @@ fn compare_numeric(a: &Value, b: &Value, op: &str) -> Result<Option<Ordering>, V
     Ok(x.partial_cmp(&y))
 }
 
+/// 比较运算的统一实现（T6.6 / T6.7）：`Eq`/`Ne` 用值相等，其余走 [`compare_numeric`]。
+///
+/// 通用比较指令（`Eq`…`Ge`）、常量融合指令（`BinaryConst` 的比较形态）与
+/// "比较 + 跳转"融合指令（`JumpIfNotCompare*`）都调用这一份，因此三者的语义与
+/// 错误消息不可能分叉。`op` 必须是比较运算符，否则返回内部错误。
+fn compare_values(op: BinOp, a: &Value, b: &Value) -> Result<bool, VmError> {
+    Ok(match op {
+        BinOp::Eq => a == b,
+        BinOp::Ne => a != b,
+        BinOp::Lt => matches!(compare_numeric(a, b, "<")?, Some(Ordering::Less)),
+        BinOp::Le => matches!(
+            compare_numeric(a, b, "<=")?,
+            Some(Ordering::Less | Ordering::Equal)
+        ),
+        BinOp::Gt => matches!(compare_numeric(a, b, ">")?, Some(Ordering::Greater)),
+        BinOp::Ge => matches!(
+            compare_numeric(a, b, ">=")?,
+            Some(Ordering::Greater | Ordering::Equal)
+        ),
+        other => {
+            return Err(VmError::TypeError(format!(
+                "internal error: `{other}` is not a comparison operator"
+            )))
+        }
+    })
+}
+
 /// 数值求和（全局 `sum` / `.sum()` / 迭代器适配器共用）。
 /// 全整数保持 Int；出现 Float 则整体 Float；非数值元素忽略（与既有 `sum` 行为一致）。
 /// 整数累加使用 checked 运算，溢出返回错误而不是 panic。
@@ -1943,45 +1970,41 @@ impl Vm {
                 Instruction::Eq { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    self.registers[base + dst.0 as usize] = Value::Bool(a == b);
+                    let res = compare_values(BinOp::Eq, a, b)?;
+                    self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
                 Instruction::Ne { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    self.registers[base + dst.0 as usize] = Value::Bool(a != b);
+                    let res = compare_values(BinOp::Ne, a, b)?;
+                    self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Lt { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = matches!(compare_numeric(a, b, "<")?, Some(Ordering::Less));
+                    let res = compare_values(BinOp::Lt, a, b)?;
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Le { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = matches!(
-                        compare_numeric(a, b, "<=")?,
-                        Some(Ordering::Less | Ordering::Equal)
-                    );
+                    let res = compare_values(BinOp::Le, a, b)?;
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Gt { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = matches!(compare_numeric(a, b, ">")?, Some(Ordering::Greater));
+                    let res = compare_values(BinOp::Gt, a, b)?;
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
                 Instruction::Ge { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
-                    let res = matches!(
-                        compare_numeric(a, b, ">=")?,
-                        Some(Ordering::Greater | Ordering::Equal)
-                    );
+                    let res = compare_values(BinOp::Ge, a, b)?;
                     self.registers[base + dst.0 as usize] = Value::Bool(res);
                 }
 
@@ -2064,6 +2087,36 @@ impl Vm {
                 Instruction::JumpIfTrue { cond, offset } => {
                     let val = &self.registers[base + cond.0 as usize];
                     if val.is_truthy() {
+                        self.frames[frame_idx].ip =
+                            (self.frames[frame_idx].ip as i32 + offset) as usize;
+                    }
+                }
+
+                // T6.7：比较 + 条件跳转融合（`if`/`while` 的条件是比较表达式时由编译器发出）。
+                // 语义等价于"比较到临时寄存器 + JumpIfFalse"，但没有临时寄存器与 truthiness 读取。
+                Instruction::JumpIfNotCompare {
+                    op,
+                    lhs,
+                    rhs,
+                    offset,
+                } => {
+                    let a = &self.registers[base + lhs.0 as usize];
+                    let b = &self.registers[base + rhs.0 as usize];
+                    if !compare_values(op, a, b)? {
+                        self.frames[frame_idx].ip =
+                            (self.frames[frame_idx].ip as i32 + offset) as usize;
+                    }
+                }
+
+                Instruction::JumpIfNotCompareConst {
+                    op,
+                    src,
+                    value,
+                    offset,
+                } => {
+                    let a = self.registers[base + src.0 as usize].clone();
+                    let b = Value::Int(i64::from(value));
+                    if !compare_values(op, &a, &b)? {
                         self.frames[frame_idx].ip =
                             (self.frames[frame_idx].ip as i32 + offset) as usize;
                     }

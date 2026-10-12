@@ -68,6 +68,11 @@ fn ada_benches(c: &mut Criterion) {
         let proto = compiled("json_roundtrip.ada");
         b.iter(|| exec(&proto))
     });
+    // T6.7：while 条件（比较 + 分支融合）与 `i += 1`（复合赋值常量融合）的形状
+    group.bench_function("while_loop", |b| {
+        let proto = compiled("while_loop.ada");
+        b.iter(|| exec(&proto))
+    });
     // 冷启动（编译 + 执行）单独一组：嵌入场景的真实成本
     group.bench_function("cold_start_numeric_loop", |b| {
         let source = std::fs::read_to_string(programs_dir().join("numeric_loop.ada")).unwrap();

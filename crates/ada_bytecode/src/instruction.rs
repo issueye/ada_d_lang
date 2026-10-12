@@ -155,6 +155,25 @@ pub enum Instruction {
     Jump {
         offset: i32,
     },
+    /// T6.7：**比较 + 条件跳转融合**——`if !(lhs op rhs) { jump }`。
+    ///
+    /// 编译器在 `if`/`while` 的条件是比较表达式时直接发出这条指令：省掉一条比较
+    /// 指令、一个临时寄存器，以及一次"bool 写入 + truthiness 读取"。
+    /// 语义等价于 `Lt/Le/…` 后紧跟 `JumpIfFalse`，由
+    /// `crates/ada_vm/tests/instruction_fusion.rs` 的差分测试固定。
+    JumpIfNotCompare {
+        op: BinOp,
+        lhs: Reg,
+        rhs: Reg,
+        offset: i32,
+    },
+    /// 同上，但右操作数是 **i32 常量**（`while i < 5` 这类最常见形态）。
+    JumpIfNotCompareConst {
+        op: BinOp,
+        src: Reg,
+        value: i32,
+        offset: i32,
+    },
     /// 没有 `match` arm 匹配：抛出运行时错误（T3.2）
     MatchFail,
     JumpIfFalse {

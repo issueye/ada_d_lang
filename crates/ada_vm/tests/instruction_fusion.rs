@@ -206,3 +206,96 @@ fn fusion_reduces_the_instruction_count() {
     );
     let _ = Value::Nil; // 保持 use 不报未使用
 }
+
+#[test]
+fn condition_fusion_reduces_loop_work_without_changing_semantics() {
+    // T6.7：`while i < 1000`（比较 + 常量 → 一条融合跳转）对比等价但**不融合**的写法
+    // `while !(i >= 1000)`（外层是 `Not`，条件不是比较表达式）与 `i += one`（右侧是变量）。
+    // 两者语义必须一致，而融合形式的指令更少——这是确定性证据，不受机器负载影响。
+    let fused_source =
+        "mut i = 0\nmut total = 0\nwhile i < 1000 {\n    total += i\n    i += 1\n}\ntotal";
+    let unfused_source = "mut i = 0\nmut total = 0\nlet one = 1\nlet limit = 1000\nwhile !(i >= limit) {\n    total += i\n    i += one\n}\ntotal";
+
+    // 语义一致：sum(0..999) = 499_500
+    assert_eq!(eval_rendered(fused_source).unwrap(), "499500");
+    assert_eq!(eval_rendered(unfused_source).unwrap(), "499500");
+
+    fn instruction_count(source: &str) -> usize {
+        let mut parser = Parser::from_source(source).expect("lex");
+        let program = parser.parse_program().expect("parse");
+        Compiler::compile_program(&program)
+            .expect("compile")
+            .instructions
+            .len()
+    }
+
+    let fused = instruction_count(fused_source);
+    let unfused = instruction_count(unfused_source);
+    assert!(
+        fused + 4 <= unfused,
+        "融合形式应明显更少指令：fused={fused}, unfused={unfused}"
+    );
+}
+
+#[test]
+fn conditional_edge_cases_still_work() {
+    // 融合路径不能破坏原有的条件语义：真值判定、短路、空 else、break/continue、
+    // 非数值比较报错、NaN
+    assert_eq!(
+        eval_rendered("if 1 < 2 { \"y\" } else { \"n\" }").unwrap(),
+        "y"
+    );
+    assert_eq!(
+        eval_rendered("if 1 > 2 { \"y\" } else { \"n\" }").unwrap(),
+        "n"
+    );
+    assert_eq!(
+        eval_rendered("if \"a\" == \"a\" { 1 } else { 0 }").unwrap(),
+        "1"
+    );
+    assert_eq!(eval_rendered("if nil { 1 } else { 2 }").unwrap(), "2");
+    assert_eq!(
+        eval_rendered("if 0 == 0 && 1 < 2 { \"both\" } else { \"no\" }").unwrap(),
+        "both"
+    );
+    assert_eq!(
+        eval_rendered("if 0 != 0 || 1 < 2 { \"either\" } else { \"no\" }").unwrap(),
+        "either"
+    );
+
+    // 非数值有序比较：错误消息必须与通用路径一致
+    assert_eq!(
+        eval_rendered("if 1 < \"a\" { 1 } else { 2 }"),
+        eval_rendered("let k = \"a\";\nif 1 < k { 1 } else { 2 }")
+    );
+    assert!(eval_rendered("if 1 < \"a\" { 1 } else { 2 }")
+        .unwrap_err()
+        .contains("only numbers are orderable"));
+
+    // NaN：所有有序比较为 false（走 else 分支），两条路径一致
+    let nan = "let nan = 0.0 / 0.0;\n";
+    assert_eq!(
+        eval_rendered(&format!("{nan}if nan < 1.0 {{ 1 }} else {{ 2 }}")),
+        eval_rendered(&format!(
+            "{nan}let k = 1.0;\nif nan < k {{ 1 }} else {{ 2 }}"
+        ))
+    );
+
+    // break / continue 在融合条件的循环里照常工作
+    assert_eq!(
+        eval_rendered("mut i = 0\nwhile i < 100 {\n    i += 1\n    if i == 5 { break }\n}\ni")
+            .unwrap(),
+        "5"
+    );
+    assert_eq!(
+        eval_rendered("mut i = 0\nmut n = 0\nwhile i < 10 {\n    i += 1\n    if i % 2 == 0 { continue }\n    n += 1\n}\nn").unwrap(),
+        "5"
+    );
+
+    // 嵌套 if/else 链
+    assert_eq!(
+        eval_rendered("let x = 7\nif x < 5 { \"s\" } else if x < 10 { \"m\" } else { \"l\" }")
+            .unwrap(),
+        "m"
+    );
+}

@@ -172,6 +172,72 @@ impl Compiler {
     }
 
     /// 生成闭包创建指令（T2.2）：先把捕获值装入连续寄存器，再发 `MakeClosure`。
+    /// T6.7：发出"条件为假则跳转"。条件是**比较表达式**时用融合指令
+    /// （`JumpIfNotCompare*`），省掉一条比较指令、一个临时寄存器，以及一次
+    /// "bool 写入 + truthiness 读取"；否则回退到"求值到临时寄存器 + `JumpIfFalse`"。
+    ///
+    /// 返回跳转指令下标，调用方用 [`Compiler::patch_conditional_jump`] 回填 `offset`。
+    fn emit_jump_if_false(&mut self, cond: &Expr, span: Span) -> Result<usize, CompileError> {
+        if let Expr::Binary { op, lhs, rhs, .. } = cond {
+            if is_comparison(*op) {
+                // 一侧是 i32 字面量 → 常量形态（`while i < 5` 最常见）
+                if let Some((operand, value, fused_op)) = fuse_int_literal(*op, lhs, rhs) {
+                    let r = self.alloc_reg()?;
+                    self.compile_expr(operand, r)?;
+                    let idx = self.proto.emit(
+                        Instruction::JumpIfNotCompareConst {
+                            op: fused_op,
+                            src: r,
+                            value,
+                            offset: 0,
+                        },
+                        span,
+                    );
+                    self.free_reg(r);
+                    return Ok(idx);
+                }
+                let r_lhs = self.alloc_reg()?;
+                self.compile_expr(lhs, r_lhs)?;
+                let r_rhs = self.alloc_reg()?;
+                self.compile_expr(rhs, r_rhs)?;
+                let idx = self.proto.emit(
+                    Instruction::JumpIfNotCompare {
+                        op: *op,
+                        lhs: r_lhs,
+                        rhs: r_rhs,
+                        offset: 0,
+                    },
+                    span,
+                );
+                self.free_reg(r_rhs);
+                self.free_reg(r_lhs);
+                return Ok(idx);
+            }
+        }
+
+        let cond_reg = self.alloc_reg()?;
+        self.compile_expr(cond, cond_reg)?;
+        let idx = self.proto.emit(
+            Instruction::JumpIfFalse {
+                cond: cond_reg,
+                offset: 0,
+            },
+            span,
+        );
+        self.free_reg(cond_reg);
+        Ok(idx)
+    }
+
+    /// 回填条件跳转的 `offset`（普通与两种融合形态通用）。
+    fn patch_conditional_jump(&mut self, idx: usize, offset: i32) {
+        match &mut self.proto.instructions[idx] {
+            Instruction::JumpIfFalse { offset: o, .. }
+            | Instruction::JumpIfTrue { offset: o, .. }
+            | Instruction::JumpIfNotCompare { offset: o, .. }
+            | Instruction::JumpIfNotCompareConst { offset: o, .. } => *o = offset,
+            _ => {}
+        }
+    }
     fn emit_closure(
         &mut self,
         dst: Reg,
@@ -489,17 +555,8 @@ impl Compiler {
                     break_jumps: Vec::new(),
                 });
 
-                let cond_reg = self.alloc_reg()?;
-                self.compile_expr(cond, cond_reg)?;
-
-                let jump_exit_idx = self.proto.emit(
-                    Instruction::JumpIfFalse {
-                        cond: cond_reg,
-                        offset: 0,
-                    },
-                    *span,
-                );
-                self.free_reg(cond_reg);
+                // T6.7：条件是比较表达式时直接发出融合的条件跳转
+                let jump_exit_idx = self.emit_jump_if_false(cond, *span)?;
 
                 let body_reg = self.alloc_reg()?;
                 self.compile_expr(body, body_reg)?;
@@ -517,11 +574,7 @@ impl Compiler {
                 // Patch exit jump
                 let exit_ip = self.proto.instructions.len();
                 let exit_offset = (exit_ip as i32) - (jump_exit_idx as i32) - 1;
-                if let Instruction::JumpIfFalse { offset, .. } =
-                    &mut self.proto.instructions[jump_exit_idx]
-                {
-                    *offset = exit_offset;
-                }
+                self.patch_conditional_jump(jump_exit_idx, exit_offset);
 
                 // Patch break jumps
                 if let Some(ctx) = self.loop_stack.pop() {
@@ -1037,6 +1090,44 @@ impl Compiler {
             Expr::Assign {
                 target, op, value, ..
             } => {
+                // T6.6b：`x += 1`（复合赋值 + 整数字面量，目标是普通局部变量）直接编成
+                // 一条 `BinaryConst`——循环计数器每轮省掉一条 `LoadInt` 与一个寄存器。
+                // 非字面量、或目标是字段/索引/全局/闭包捕获时仍走通用路径。
+                if !matches!(op, AssignOp::Assign) {
+                    if let (Expr::Ident(name, _), Some(constant)) = (&**target, int_literal(value))
+                    {
+                        if let Some((local_reg, boxed, is_mut)) = self.resolve_local(name) {
+                            if !is_mut {
+                                return Err(CompileError::AssignToImmutable {
+                                    name: name.clone(),
+                                    span,
+                                });
+                            }
+                            if !boxed {
+                                if let Some(bin) = compound_binop(*op) {
+                                    self.proto.emit(
+                                        Instruction::BinaryConst {
+                                            dst: local_reg,
+                                            op: bin,
+                                            src: local_reg,
+                                            value: constant,
+                                        },
+                                        span,
+                                    );
+                                    self.proto.emit(
+                                        Instruction::Move {
+                                            dst,
+                                            src: local_reg,
+                                        },
+                                        span,
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let val_reg = self.alloc_reg()?;
                 self.compile_expr(value, val_reg)?;
 
@@ -1464,17 +1555,8 @@ impl Compiler {
                 else_branch,
                 ..
             } => {
-                let cond_reg = self.alloc_reg()?;
-                self.compile_expr(cond, cond_reg)?;
-
-                let jmp_false = self.proto.emit(
-                    Instruction::JumpIfFalse {
-                        cond: cond_reg,
-                        offset: 0,
-                    },
-                    span,
-                );
-                self.free_reg(cond_reg);
+                // T6.7：`if <比较>` 直接发出融合的条件跳转
+                let jmp_false = self.emit_jump_if_false(cond, span)?;
 
                 self.compile_expr(then_branch, dst)?;
 
@@ -1483,11 +1565,7 @@ impl Compiler {
                 // Patch jmp_false
                 let else_start = self.proto.instructions.len();
                 let else_offset = (else_start as i32) - (jmp_false as i32) - 1;
-                if let Instruction::JumpIfFalse { offset, .. } =
-                    &mut self.proto.instructions[jmp_false]
-                {
-                    *offset = else_offset;
-                }
+                self.patch_conditional_jump(jmp_false, else_offset);
 
                 if let Some(eb) = else_branch {
                     self.compile_expr(eb, dst)?;
@@ -1689,17 +1767,9 @@ impl Compiler {
                     }
 
                     if let Some(guard) = &arm.guard {
-                        let g_reg = self.alloc_reg()?;
-                        self.compile_expr(guard, g_reg)?;
-                        let jmp = self.proto.emit(
-                            Instruction::JumpIfFalse {
-                                cond: g_reg,
-                                offset: 0,
-                            },
-                            arm.span,
-                        );
+                        // T6.7：guard 是比较表达式时同样走融合跳转
+                        let jmp = self.emit_jump_if_false(guard, arm.span)?;
                         arm_skip_jumps.push(jmp);
-                        self.free_reg(g_reg);
                     }
 
                     // Body
@@ -1711,11 +1781,8 @@ impl Compiler {
                     let next_arm_ip = self.proto.instructions.len();
                     for jmp in arm_skip_jumps {
                         let offset = (next_arm_ip as i32) - (jmp as i32) - 1;
-                        if let Instruction::JumpIfFalse { offset: o, .. } =
-                            &mut self.proto.instructions[jmp]
-                        {
-                            *o = offset;
-                        }
+                        // T6.7：guard 的比较跳转是融合形态，必须用通用回填
+                        self.patch_conditional_jump(jmp, offset);
                     }
                 }
 
@@ -1918,8 +1985,7 @@ fn collect_stmt(stmt: &Stmt, in_fn: bool, out: &mut HashSet<String>) {
     }
 }
 
-/// T8.3：把"是否 `mut`"翻译成全局写入种类。
-///
+/// T8.3：把"是否 `mut`"翻译成全局写入种类。///
 /// **声明**（`let`/`mut`）让脚本接管该名字：可以从内建名手里夺过来，也会重置
 /// 之前的不可变标记。**赋值**（`Assign`）才受"不可变全局 / 内建名"保护。
 fn global_write_kind(is_mut: bool) -> GlobalWrite {
@@ -1984,5 +2050,26 @@ fn int_literal(expr: &Expr) -> Option<i32> {
             Some(*n as i32)
         }
         _ => None,
+    }
+}
+
+/// 是否为比较运算符（T6.7：只有比较条件才走"比较 + 跳转"融合）。
+fn is_comparison(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+    )
+}
+
+/// T6.6b：复合赋值运算符 → 对应的二元运算符（用于 `x += 1` 的常量融合）。
+/// `Assign` 本身不是二元运算，返回 `None`。
+fn compound_binop(op: AssignOp) -> Option<BinOp> {
+    match op {
+        AssignOp::AddAssign => Some(BinOp::Add),
+        AssignOp::SubAssign => Some(BinOp::Sub),
+        AssignOp::MulAssign => Some(BinOp::Mul),
+        AssignOp::DivAssign => Some(BinOp::Div),
+        AssignOp::ModAssign => Some(BinOp::Mod),
+        AssignOp::Assign => None,
     }
 }
