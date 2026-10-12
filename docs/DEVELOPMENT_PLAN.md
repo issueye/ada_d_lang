@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **130**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `doc_examples.rs` 14 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
+| 测试总数 | 34 | **156**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `async.rs` 26 + `doc_examples.rs` 14 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -115,7 +115,8 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | REPL / 多轮求值 | 顶层 `let` 跨轮丢失 | ✅ 顶层绑定写全局表，跨轮可见；函数体内局部不外泄（T2.4/T2.7） |
 | Fuel 生命周期 | 一次 `OutOfFuel` 后 `Engine` 永久失效 | ✅ 每次求值重新装填 + `remaining_fuel`/`reset_fuel`（T2.6） |
 | 闭包捕获 | 无 upvalue：捕获外层变量报 `UndefinedGlobal` | ✅ 引用共享（可写捕获）、多级传递、逃逸闭包、每轮循环变量独立槽（T2.2） |
-| 端到端 golden | 无 | ✅ `examples/showcase.ada` + `showcase.expected.txt` + `golden_showcase.rs` 逐行比对（13 个规范小节） |
+| 端到端 golden | 无 | ✅ `examples/showcase.ada` + `showcase.expected.txt` + `golden_showcase.rs` 逐行比对（14 个规范小节，含 `yield_now` 确定性交错） |
+| 异步并发 | `spawn` 立即求值、无调度、`sleep_ms` 阻塞线程（2×200ms 实测 401ms） | ✅ 单线程协作式事件循环（决策 D2）：`spawn` 惰性、任务可挂起/恢复、`sleep_ms` 走真实定时器（2×200ms 实测 **200ms**）、`timeout`/`cancel` 可用 |
 | 语义确定性 | `let` 可被重新赋值（不可变性不生效）、非穷尽 `match` 返回静默错误值、`5 < "a"` 静默 `false`、Float 与 Int 输出无法区分 | ✅ 全部收紧（T3.1/T3.2/T3.5/T3.6）：编译期不可变、`VmError::NoMatch`、比较报错、`1.0` 可区分；负索引统一（G-L14） |
 
 ---
@@ -219,20 +220,21 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M4 · 异步与并发运行时 📋（预计 2–3 周）
+### M4 · 异步与并发运行时 🚧（T4.1/T4.2/T4.3/T4.5/T4.6 ✅，T4.4 按 D2 转为非目标）
 
 **前置决策**：D2（真 Fiber + Tokio，或先落地"明确标注的同步占位"）。
 
 | ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T4.1 | `Instruction::Spawn` 语义改造：携带 `proto_idx + args`，真正创建待执行任务而非包装已求值结果 | W4/W2 | P1 | `instruction.rs`, `compiler.rs`, `vm.rs` | `spawn f()` 不在 spawn 处执行 `f` |
-| T4.2 | 任务调度器：任务队列 + `VmYield::Awaiting` 或等价挂起模型 | W4 | P1 | `ada_vm/src/vm.rs`（新 `task.rs`） | 2 个各 `sleep_ms(200)` 的任务并发总耗时 < 250ms |
-| T4.3 | `sleep_ms` 非阻塞化（按 D2 走 tokio timer 或协作式调度器） | W4 | P1 | `builtins/core.rs` | `sleep_ms` 不再阻塞 OS 线程（集成测试断言并发耗时） |
-| T4.4 | 宿主异步接口：`Engine::eval_async` / `register_async_fn` | W5 | P1 | `ada_engine/src/lib.rs` | 在 `#[tokio::main]` 下调用异步 native fn 成功 |
-| T4.5 | `await_race` / `timeout(ms)` 语义正确化 | W3/W4 | P2 | `builtins/core.rs` | 首个就绪返回；超时返回 `nil` 或约定值 |
-| T4.6 | 并发契约文档化：任务生命周期、取消、错误传播规则 | W6 | P1 | `SPEC_ASYNC.md` | 规范含"错误传播/取消"小节 + 测试 |
+| ✅ T4.1 | `Instruction::Spawn` 语义改造：携带 `callee + args`，真正创建待执行任务而非包装已求值结果 | W4/W2 | P1 | `instruction.rs`, `compiler.rs`, `vm.rs` | 完成证据：`async.rs::spawn_does_not_execute_the_call_at_the_spawn_point`（spawn 后任务体未执行）；非调用表达式走 `SpawnValue` |
+| ✅ T4.2 | 任务调度器：任务队列 + 挂起模型（按 D2 采用单线程协作式事件循环 + `SavedExecution`） | W4 | P1 | `ada_vm/src/{task,vm}.rs` | 完成证据：2 个各 `sleep_ms(200)` 的任务实测总耗时 **200ms**（< 250ms），串行对照 401ms；4×150ms 也只需约 150ms |
+| ✅ T4.3 | `sleep_ms` 非阻塞化（协作式调度器 + 真实定时器） | W4 | P1 | `builtins/core.rs`, `vm.rs` | 完成证据：`concurrent_sleeps_overlap_instead_of_adding_up`（含下界断言证明真的等待）；适配器回调内的阻塞降级已记录（SPEC_ASYNC §4.3） |
+| ❌ T4.4 | 宿主异步接口：`Engine::eval_async` / `register_async_fn` | W5 | P1 | — | **按 D2 重定义为非目标**：不引入 Tokio/Future 桥接；宿主异步工作用 `register_fn` 同步注入（SPEC_ASYNC §6）。需要真 I/O 并发时按 D2b 重新评估 |
+| ✅ T4.5 | `await_any`（原 `await_race`）语义正确化 + `timeout(task, ms)` | W3/W4 | P2 | `builtins/core.rs`, `vm.rs` | 完成证据：`await_any` 返回最先结算者（慢/快两任务用例）；`timeout` 到期取消任务并返回 `nil`（实测 51ms 触发、状态 `cancelled`） |
+| ✅ T4.6 | 并发契约文档化：任务生命周期、取消、错误传播规则 | W6 | P1 | `SPEC_ASYNC.md` | 完成证据：SPEC_ASYNC §5 状态机 + 错误传播/取消/泄漏/确定性四张条文表；`async.rs` **26 个用例**覆盖每条条文 |
 
-**退出标准**：并发性可由测试断言（而非人工观察）；ASYNC 规范与实现一一对应。
+**退出标准**：✅ 基本达成 —— 并发性由测试断言（真实耗时 + 下界断言），ASYNC 规范与实现一一对应。
+⚠️ 遗留：T4.4 按 D2 转为非目标；适配器回调内无法挂起（G-A9）与任务上限/整体墙钟预算（T5.3/T5.4）留待后续。
 
 ---
 
@@ -303,7 +305,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 130 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 文档示例 14 + 多轮求值 8 + golden 3 + 文档门禁 2）。
+**当前状态**：`cargo test --workspace` → 156 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 异步 26 + 文档示例 14 + 多轮求值 8 + golden 3 + 文档门禁 2）。
 
 ---
 
@@ -351,7 +353,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | ID | 决策点 | 选项 | 影响 | 截止 |
 | :--- | :--- | :--- | :--- | :--- |
 | D1 | 值模型 | A 保持 `enum Value`；B 实施 NaN-boxing | B 影响 `value.rs` 全量重写与所有 builtins；收益需基准证明 | M6 开始前 |
-| D2 | 异步实现 | A 真 Fiber + Tokio；B 先落地"同步 Future 占位"并明确标注 | 决定 M4 工作量与文档措辞 | M4 开始前 |
+| D2 | 异步实现 | ~~A 真 Fiber + Tokio~~；~~B 同步 Future 占位~~ → **已决：C（单线程协作式事件循环，无 Tokio/无线程）** | **决策（2026-10，M4 执行期）**：任务 = 同一 VM 上可保存的执行现场（帧栈 + 寄存器窗口），挂起点白名单（`sleep_ms`/`yield_now`/`await*`/`timeout`），就绪队列 FIFO + 真实定时器。理由：零依赖、执行顺序完全确定（对 AI 生成代码可测性关键）、嵌入成本低、挂起点天然是沙箱墙钟检查点。代价：无 CPU 并行；适配器回调内无法保存宿主栈，`sleep_ms` 退化为阻塞（已记录为 G-A9）。T4.4 因此重定义为 ❌ 非目标 | ✅ 已决（M4 落地） |
 | D3 | 迭代器求值 | ~~A 即时~~；~~B 惰性~~ → **已决：A（即时）** | **决策（2026-10，M2 执行期）**：适配器一律物化为 `Array`，先把能力与错误契约打通；惰性链需引入迭代器对象与去虚拟化，收益要用基准证明（缺口 G-S12）。若未来启用惰性，`collect()` 语义与 `IterNext` 指令可复用 | ✅ 已决（T2.1 落地） |
 | D4 | `{ x }` 歧义 | ~~A 判为 block~~；~~B 保持现状判 map~~ → **已决：B（保持 map）** | **决策（2026-10，M3 执行期）**：`{}` 是 map 字面量，`{ name }` 是 Token 高效的简写（AI-first 目标），块表达式改为"必须以语句开头"即可无歧义地区分（SPEC_LANGUAGE §5.6）。选 A 会删掉 map 简写并静默改变既有脚本含义 | ✅ 已决（T3.3 落地） |
 | D5 | 整数溢出语义 | ~~A 报错~~；~~B 回绕~~ → **已决：A（报错）** | **决策（2026-10，M1 执行期）**：采用 `checked_*` + `VmError::TypeError`。理由：AI 沙箱场景下"静默回绕"会产生难排查的错误结果，而硬错误可被宿主捕获；若未来基准显示热路径成本显著，再评估回绕或 f64 提升 | ✅ 已决（T1.2 落地） |
@@ -398,7 +400,7 @@ docs/
 | M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 为 P1 遗留） |
 | M2 语言核心补齐 | 1–2 周 | ✅ | ☑ |
 | M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位遗留） |
-| M4 异步并发 | 2–3 周 | 📋 | ☐ |
+| M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | 📋 | ☐ |
 | M6 性能与 JIT | 3–6 周 | 📋 | ☐ |
 | M7 生态工具链 | 长期 | 📋 | ☐ |

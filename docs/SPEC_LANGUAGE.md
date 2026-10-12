@@ -107,7 +107,7 @@ let x = 1
 | `array` | `[a, b]` | 可变、引用语义 |
 | `map` | `{k: v}` | 键为字符串，有序性不保证 |
 | `function` | `fn` / `x => e` | 闭包或原生函数 |
-| `task` | `spawn expr` | 并发任务句柄（当前语义见 [SPEC_ASYNC §3](SPEC_ASYNC.md)） |
+| `task` | `spawn expr` | 协作式并发任务句柄（M4 已落地：惰性执行 + 挂起调度，见 [SPEC_ASYNC §3](SPEC_ASYNC.md)） |
 | `iterator` | `range(...)` | 惰性迭代器；支持全部适配器方法与 `.next()`，状态可消费（见 SPEC_STDLIB §5–§6） |
 
 ### 3.2 类型标注 ⚠️（不生效）
@@ -158,6 +158,10 @@ let x = 1
 ### 4.3 结合性
 
 - 前缀一元：右结合，操作数以 Unary(14) 优先级解析，故 `-a * b` = `(-a) * b`、`!a == b` = `(!a) == b` ✅
+- ⚠️ `spawn` 同属前缀一元（Unary(14)），因此：
+  - `spawn f(1) + 2` = `(spawn f(1)) + 2`（`+` 是 11 级，不进入操作数）
+  - 但 `spawn f(1).await` = `spawn (f(1).await)`（`.await` 是 Call(15) 级，**会**进入操作数）。
+    想表达"spawn 后再等待"请写两行：`let t = spawn f(1)` / `t.await`
 - `??`、`|>`、二元算术/比较：左结合（由 `prec >= next_prec` 的循环条件决定）✅
 - 赋值：**不形成链**（见 §4.2）✅
 

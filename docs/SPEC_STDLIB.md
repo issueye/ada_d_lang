@@ -72,14 +72,19 @@
 | `push(arr, v)` | ✅ | 就地向数组追加，返回 `nil`；等价 `arr.push(v)` |
 | `sum(arr)` | ✅ | 数值累加（Int 保持 Int，出现 Float 则整体 Float）；⚠️ 非数值元素**静默忽略** |
 
-### 2.7 异步原语（语法层 ✅ / 语义见 SPEC_ASYNC）
+### 2.7 异步原语 ✅（M4：由 VM 调度器实现，语义见 [SPEC_ASYNC](SPEC_ASYNC.md)）
 
 | 签名 | 状态 | 行为 |
 | :--- | :--- | :--- |
-| `sleep_ms(ms)` | ⚠️ | **阻塞宿主线程** `std::thread::sleep`（目标：非阻塞，T4.3） |
-| `await_all(arr)` | ⚠️ | 遍历数组解包 `task`；当前 `spawn` 已立即求值，故等价于原样拷贝（T4.x） |
-| `await_race(arr)` | ⚠️ | 返回数组首元素解包结果，**不是"首个就绪"**（T4.5） |
-| `.timeout(ms)` | 📋 | 目标 API（T4.5），当前不存在 |
+| `sleep_ms(ms)` | ✅ | 挂起到真实墙钟时刻（不阻塞 OS 线程）；适配器回调内退化为阻塞（SPEC_ASYNC §4.3） |
+| `yield_now()` | ✅ | 让出一次调度（不推进墙钟），用于观察确定性交错 |
+| `await_all(arr)` | ✅ | 未全部结算则挂起；按**实参顺序**返回结果数组；任一失败即抛出 |
+| `await_any(arr)` | ✅ | 等待**任一**结算，返回最先结算者的值 |
+| `await_race(arr)` | ✅ | `await_any` 的旧名（等价） |
+| `timeout(task, ms)` / `task.timeout(ms)` | ✅ | 期限内结算返回其值，超时则取消任务并返回 `nil` |
+| `task.cancel()` | ✅ | 协作式取消，返回 `bool`（已终态返回 `false`） |
+| `task.state` / `task.id` / `task.label` | ✅ | 任务诊断信息（状态名见 SPEC_ASYNC §5.1） |
+| `is_task(v)` | ✅ | 是否为任务值 |
 
 ---
 
@@ -164,7 +169,7 @@
 | `.sum()` | ✅ | 数值累加；非数值元素静默忽略 ⚠️ |
 | `.enumerate()` | ✅ | 返回 `[[0, v0], [1, v1], ...]` 新数组 |
 | `.join(sep)` | ✅ | 拼接字符串，缺省分隔符 `","` |
-| `.await_all()` | ⚠️ | 见 §2.7 |
+| `.await_all()` / `.await_any()` / `.await_race()` | ✅ | 见 §2.7（真实挂起与并发） |
 | `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | ✅ | **迭代器适配器**（T2.1），语义与惰性程度统一见 §6 |
 | `.iter()` | ✅ | 返回显式迭代器（T2.3）；`iterator.next()` 逐项推进，耗尽返回 `nil` |
 
@@ -327,7 +332,7 @@ engine.register_module(MyToolModule::new());
 | G-S1 | 迭代器适配器全族缺失（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`） | ✅ 已修复（T2.1）：13 个适配器已实现，方法/全局双入口 | ✅ T2.1 |
 | G-S2 | `string.len` 与 `len()` 返回字节数 | ✅ 已修复（T2.5）：二者均为字符数，字节数走 `.len_bytes` | ✅ T2.5 |
 | G-S3 | `iterator` 无任何方法，无法链式消费 | ✅ 已修复（T2.3）：适配器 + `.iter()`/`.next()` 可用 | ✅ T2.3 |
-| G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ⚠️ | T4.3 / T4.5 |
+| G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ✅ 已修复（T4.3/T4.5）：`sleep_ms` 挂起而非阻塞；`await_any`/`await_race` 返回最先结算者，新增 `timeout`/`cancel` | ✅ M4 |
 | G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ⚠️ | T5.1 / T5.2 |
 | G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ 口径统一 | T3.5 |
 | G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |

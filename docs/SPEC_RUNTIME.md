@@ -104,13 +104,15 @@ enum Value {
 | 字符串 | `StringConcat{dst,start,count}` |
 | 闭包 | `Closure{dst,proto_idx}`（无捕获）、`MakeClosure{dst,proto_idx,upvalue_start,upvalue_count}`（带捕获） |
 | 捕获槽（T2.2） | `MakeCell{dst,src}` `CellGet{dst,cell}` `CellSet{cell,src}` `UpvalueGet{dst,idx}` `UpvalueSet{idx,src}` |
-| 异步 | `Await{dst,future}` `Spawn{dst,expr}` |
+| 异步 | `Await{dst,future}` `Spawn{dst,callee,arg_start,arg_count}` `SpawnValue{dst,src}` |
+| 任务调度（M4） | 无新指令：调度由 VM 的 `run_scheduler` 与 `SavedExecution`（帧栈 + 寄存器现场）完成 |
 | 迭代 | `IterInit{dst,src}` `IterNext{dst,iter,offset}` |
 
 `FunctionProto.upvalues: Vec<UpvalueDesc>` 描述本函数每个捕获的来源
 （`ParentLocal(reg)` = 父帧局部槽；`ParentUpvalue(idx)` = 父帧自己的第 idx 个捕获）。
 
-**待改造**（任务 T4.1）：`Spawn` 需携带 `proto_idx + arg_start + arg_count`。
+**已落地**（M4 / T4.1）：`Spawn` 携带 `callee + arg_start + arg_count`，在生成点**不执行**调用体；
+非调用表达式走 `SpawnValue`（立即完成的任务）。调度模型与任务契约见 [SPEC_ASYNC](SPEC_ASYNC.md)。
 
 ---
 
@@ -286,7 +288,7 @@ struct Vm {
 | `LexError` | `UnexpectedChar` `UnterminatedString` `UnterminatedBlockComment` `InvalidNumber` `UnterminatedInterpExpr` | 词法阶段 |
 | `ParseError` | `UnexpectedToken` `UnexpectedEof` `InvalidAssignmentTarget` `Lex(..)` | 语法阶段 |
 | `CompileError` | `VariableNotFound` `TooManyRegisters` `InvalidAssignmentTarget` **`AssignToImmutable`** | 编译阶段（T3.1：向 `let` 绑定赋值） |
-| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` **`NoMatch`** | 运行阶段（T3.2：非穷尽 `match`） |
+| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` `NoMatch` **`TaskFailed` `TaskCancelled` `TaskDeadlock`** | 运行阶段（T3.2 非穷尽 `match`；M4 任务错误传播/取消/死锁） |
 | `ada_engine::Error` | `Parse` `Compile` `Vm` `Conversion` | 宿主门面统一封装 |
 
 | 规范要求 | 状态 |

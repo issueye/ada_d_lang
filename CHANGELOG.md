@@ -7,6 +7,17 @@
 
 ### Added
 
+- **协作式并发运行时（M4 / T4.1–T4.3）**：`spawn`/`await` 从"语法占位"变为真实调度（决策 D2）。
+  - `spawn f(a, b)` 只求值调用目标与实参并登记任务，**不在生成点执行任务体**；任务首次被调度时才运行。
+  - 单线程协作式事件循环：每个任务持有独立的帧栈 + 寄存器窗口（`SavedExecution`），挂起点让出、按需恢复；就绪队列 FIFO 保证执行顺序确定。
+  - `sleep_ms` 改为挂起到真实墙钟时刻（不再阻塞 OS 线程），事件循环统一等待：2 个各 200ms 的任务实测总耗时 **200ms**（旧实现 401ms），4×150ms 也只需约 150ms。
+  - 新指令 `Spawn{dst,callee,arg_start,arg_count}` 与 `SpawnValue{dst,src}`。
+- **任务 API（M4 / T4.5–T4.6）**：`await_all`/`await_any`（`await_race` 为旧名）、`timeout(task, ms)`、`task.cancel()`、`task.state`/`task.id`/`task.label`、`yield_now()`。
+  - `await_any` 返回**最先结算**者的值（旧实现错误地返回数组首元素）。
+  - `timeout(task, ms)` 到期取消任务并返回 `nil`；`task.cancel()` 为协作式取消，返回 `bool`。
+  - 错误在 `await` 处抛 `TaskFailed{label, source}`（保留原始错误），取消抛 `TaskCancelled`，全部等待且无定时器时抛 `TaskDeadlock`。
+- 测试：`crates/ada_vm/tests/async.rs`（26 个用例，含真实并发耗时断言与确定性交错断言）；`examples/showcase.ada` 增加确定性调度演示，`examples/demo.ada` 增加并发耗时对照。
+
 - **闭包 upvalue 捕获（T2.2）**：闭包可以读写外层局部变量，语义为**引用共享**。
   - 新增指令 `MakeCell` / `CellGet` / `CellSet` / `UpvalueGet` / `UpvalueSet` / `MakeClosure` 与 `FunctionProto.upvalues`（`UpvalueDesc`）。
   - 编译器做"嵌套函数引用名"预扫描来决定装箱；捕获链逐层传递，中间层不直接引用也能把槽传下去。
@@ -43,12 +54,18 @@
 - 混合数值类型的取模（`5.0 % 2`、`5 % 2.0`）由报错改为提升为 Float 计算（T3.5）。
 - 比较运算对非数值操作数静默返回 `false` 改为报 `TypeError`（T3.5）；`NaN` 与任何值的有序比较仍为 `false`（IEEE-754）。
 - 整数值的浮点不再与整数同形（T3.6）：`to_str(1.0)` 由 `"1"` 改为 `"1.0"`，极大/极小值用科学计数法（`1e300`）。
+- `spawn` 由「立即执行并包装结果」改为「惰性创建任务」（M4）：`spawn f()` 之后 `f` 不再立刻执行；
+  需要结果请 `await`。此外 `spawn f(1).await` 按优先级解析为 `spawn (f(1).await)`（`.await` 是 Call 级），
+  要"生成后再等待"请拆成两行。
+- `await_race` 的语义修正为「最先结算」（原为「数组首元素」）；`await_any` 为推荐名，`await_race` 保留为别名。
+- `sleep_ms` 不再阻塞宿主线程（M4）：在任务内挂起等待；仅在迭代器适配器回调（Rust 栈帧）内退化为真实阻塞。
+- `await_all`/`await_any` 的实参必须是任务数组：非任务元素不再被原样拷贝，而是报 `TypeError`。
 
 ### Changed
 
 - 文档整合为「单一权威」结构：新增 `docs/README.md` 索引与 `SPEC_LANGUAGE`/`SPEC_RUNTIME`/`SPEC_STDLIB`/`SPEC_ASYNC`，移除 `LANGUAGE_DESIGN`/`STDLIB_DESIGN`/`ITERATOR_SPEC`/`ASYNC_DESIGN`；路线图唯一收敛到 `docs/DEVELOPMENT_PLAN.md`（T0.3）。
 - `cargo fmt` 全量格式化（纯格式，无语义变更）。
-- 冲突的语义已定案：整数溢出采用「报错」而非回绕（决策 D5）；迭代器适配器采用「即时求值」（决策 D3）；闭包捕获采用「引用共享」（决策 D8）；`{ x }` 保持为 map 简写（决策 D4）；`match` 非穷尽采用「运行时错误」而非警告（决策 D7）。
+- 冲突的语义已定案：整数溢出采用「报错」而非回绕（决策 D5）；迭代器适配器采用「即时求值」（决策 D3）；闭包捕获采用「引用共享」（决策 D8）；`{ x }` 保持为 map 简写（决策 D4）；`match` 非穷尽采用「运行时错误」而非警告（决策 D7）；异步采用「单线程协作式事件循环」而非 Tokio/Fiber（决策 D2）。
 - 成员派发优先级明确化：map 上的适配器同名键优先（`{ map: 7 }.map` → `7`），既有原型方法名（`len` 等）仍优先于同名键（`{ len: 9 }.len` → `1`，缺口 G-S12/S13）。
 
 ### Breaking
