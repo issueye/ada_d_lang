@@ -227,6 +227,41 @@ pub enum Instruction {
         dst: Reg,
         proto_idx: u32,
     },
+    /// 创建带捕获的闭包（T2.2）：把 `upvalue_start..upvalue_start+upvalue_count`
+    /// 这些寄存器（存放被捕获的 Cell）装入闭包。
+    MakeClosure {
+        dst: Reg,
+        proto_idx: u32,
+        upvalue_start: Reg,
+        upvalue_count: u16,
+    },
+
+    // Upvalue cells (T2.2)
+    /// 把 `src` 的值包成可共享的 Cell 写入 `dst`（`src == dst` 表示就地装箱）
+    MakeCell {
+        dst: Reg,
+        src: Reg,
+    },
+    /// 读取 Cell 内部的值
+    CellGet {
+        dst: Reg,
+        cell: Reg,
+    },
+    /// 写入 Cell 内部的值
+    CellSet {
+        cell: Reg,
+        src: Reg,
+    },
+    /// 读取当前闭包第 `idx` 个捕获（解引用 Cell）
+    UpvalueGet {
+        dst: Reg,
+        idx: u16,
+    },
+    /// 写入当前闭包第 `idx` 个捕获（透过 Cell 写）
+    UpvalueSet {
+        idx: u16,
+        src: Reg,
+    },
 
     // Async & Concurrency
     Await {
@@ -250,6 +285,18 @@ pub enum Instruction {
     },
 }
 
+/// 闭包捕获的来源描述（T2.2）。
+///
+/// 子函数按 `upvalues` 的顺序声明自己需要哪些外层变量；创建闭包时，
+/// 父帧按同一顺序把值（Cell）装进 `MakeClosure` 指定的寄存器窗口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpvalueDesc {
+    /// 取自父帧的一个局部变量槽（该槽必须已装箱为 Cell）
+    ParentLocal(u16),
+    /// 取自父帧自身的第 n 个捕获（多级嵌套时继续向上传递）
+    ParentUpvalue(u16),
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FunctionProto {
     pub name: String,
@@ -261,6 +308,8 @@ pub struct FunctionProto {
     pub names: Vec<String>,
     pub child_protos: Vec<FunctionProto>,
     pub spans: Vec<Span>,
+    /// 本函数捕获的外层变量（顺序即 `UpvalueGet`/`UpvalueSet` 的下标）
+    pub upvalues: Vec<UpvalueDesc>,
 }
 
 impl FunctionProto {
@@ -275,6 +324,7 @@ impl FunctionProto {
             names: Vec::new(),
             child_protos: Vec::new(),
             spans: Vec::new(),
+            upvalues: Vec::new(),
         }
     }
 

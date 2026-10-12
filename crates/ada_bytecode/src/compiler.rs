@@ -1,5 +1,6 @@
-use crate::instruction::{Constant, FunctionProto, Instruction, Reg};
+use crate::instruction::{Constant, FunctionProto, Instruction, Reg, UpvalueDesc};
 use ada_ast::*;
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,6 +17,8 @@ struct Local {
     name: String,
     reg: Reg,
     depth: usize,
+    /// 是否已装箱为 `Value::Cell`（T2.2：被嵌套函数捕获的变量）
+    boxed: bool,
 }
 
 pub struct Compiler {
@@ -27,6 +30,14 @@ pub struct Compiler {
     loop_stack: Vec<LoopContext>,
     /// 仅顶层（模块）编译单元为 true：决定顶层绑定是否同时写入全局表
     is_module_scope: bool,
+    /// 本函数中需要装箱的局部变量名（T2.2 预扫描结果）
+    boxed_names: HashSet<String>,
+    /// 本函数声明的 upvalue 名字，顺序即 `UpvalueGet`/`UpvalueSet` 的下标
+    upvalue_names: Vec<String>,
+    /// 本函数可见的**外层**名字（T2.2）：由父编译器在创建子编译器时传入。
+    /// 只放名字，具体来源（父局部 / 父 upvalue）由父层在子编译完成后解析，
+    /// 这样多级嵌套时中间层即使不直接引用也能把捕获链传递下去。
+    outer_names: HashSet<String>,
 }
 
 struct LoopContext {
@@ -44,9 +55,192 @@ impl Compiler {
             max_reg: arity,
             loop_stack: Vec::new(),
             is_module_scope: false,
+            boxed_names: HashSet::new(),
+            upvalue_names: Vec::new(),
+            outer_names: HashSet::new(),
         };
         comp.max_reg = comp.max_reg.max(arity);
         comp
+    }
+
+    /// 准备编译一个函数体（T2.2）：
+    /// 1. 预扫描出"被嵌套函数引用过的名字"，用于决定哪些局部变量要装箱；
+    /// 2. 记录外层可见名字的捕获来源。
+    fn prepare_body(&mut self, body: &Expr, outer_names: HashSet<String>) {
+        self.boxed_names = collect_names_in_nested_fns(body);
+        self.outer_names = outer_names;
+    }
+
+    /// 模块编译单元同样需要预扫描（顶层 `mut` 也可能被闭包捕获并写入）。
+    fn prepare_program(&mut self, program: &Program) {
+        let mut names = HashSet::new();
+        for stmt in &program.stmts {
+            collect_stmt(stmt, false, &mut names);
+        }
+        self.boxed_names = names;
+    }
+
+    /// 子函数可见的外层名字（T2.2）。
+    ///
+    /// 只有**已装箱**的局部变量能作为捕获来源——预扫描保证被嵌套函数引用的
+    /// 局部变量一定已装箱；同时把本函数自己的 `outer_names` 继续向下传递，
+    /// 以支持"中间层不直接引用"的多级捕获。
+    fn visible_outer_names(&self) -> HashSet<String> {
+        let mut names = self.outer_names.clone();
+        for local in &self.locals {
+            if local.boxed {
+                names.insert(local.name.clone());
+            }
+        }
+        names
+    }
+
+    /// 把名字解析为 upvalue 下标（T2.2）：只登记名字，描述符由父层解析。
+    fn resolve_upvalue(&mut self, name: &str) -> Option<u16> {
+        if !self.outer_names.contains(name) {
+            return None;
+        }
+        if let Some(idx) = self.upvalue_names.iter().position(|n| n == name) {
+            return Some(idx as u16);
+        }
+        self.upvalue_names.push(name.to_string());
+        Some((self.upvalue_names.len() - 1) as u16)
+    }
+
+    /// 在父层视角解析子函数某个捕获的来源（T2.2）。
+    ///
+    /// - 命中本层已装箱局部变量 → `ParentLocal`
+    /// - 否则通过 `resolve_upvalue` 在本层物化该捕获（可能继续向上传递）→ `ParentUpvalue`
+    fn resolve_capture_source(&mut self, name: &str) -> Result<UpvalueDesc, CompileError> {
+        if let Some((reg, _)) = self.resolve_local(name) {
+            return Ok(UpvalueDesc::ParentLocal(reg.0));
+        }
+        self.resolve_upvalue(name)
+            .map(UpvalueDesc::ParentUpvalue)
+            .ok_or_else(|| CompileError::VariableNotFound(name.to_string()))
+    }
+
+    /// 子函数编译完成后，把它的 upvalue 名字列表解析成捕获描述符（顺序一致）。
+    fn resolve_child_upvalues(
+        &mut self,
+        names: &[String],
+    ) -> Result<Vec<UpvalueDesc>, CompileError> {
+        let mut descriptors = Vec::with_capacity(names.len());
+        for name in names {
+            descriptors.push(self.resolve_capture_source(name)?);
+        }
+        Ok(descriptors)
+    }
+
+    fn is_boxed(&self, name: &str) -> bool {
+        self.boxed_names.contains(name)
+    }
+
+    /// 生成闭包创建指令（T2.2）：先把捕获值装入连续寄存器，再发 `MakeClosure`。
+    fn emit_closure(
+        &mut self,
+        dst: Reg,
+        proto_idx: u32,
+        upvalues: &[UpvalueDesc],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        if upvalues.is_empty() {
+            self.proto
+                .emit(Instruction::Closure { dst, proto_idx }, span);
+            return Ok(());
+        }
+        let start = Reg(self.next_reg);
+        for desc in upvalues {
+            let reg = self.alloc_reg()?;
+            match desc {
+                UpvalueDesc::ParentLocal(src) => {
+                    self.proto.emit(
+                        Instruction::Move {
+                            dst: reg,
+                            src: Reg(*src),
+                        },
+                        span,
+                    );
+                }
+                UpvalueDesc::ParentUpvalue(idx) => {
+                    self.proto.emit(
+                        Instruction::UpvalueGet {
+                            dst: reg,
+                            idx: *idx,
+                        },
+                        span,
+                    );
+                }
+            }
+        }
+        self.proto.emit(
+            Instruction::MakeClosure {
+                dst,
+                proto_idx,
+                upvalue_start: start,
+                upvalue_count: upvalues.len() as u16,
+            },
+            span,
+        );
+        for _ in upvalues {
+            self.next_reg -= 1;
+        }
+        Ok(())
+    }
+
+    /// 复合赋值共用的二元运算发射（T2.2）。
+    fn emit_compound_op(
+        &mut self,
+        op: AssignOp,
+        dst: Reg,
+        lhs: Reg,
+        rhs: Reg,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let inst = match op {
+            AssignOp::AddAssign => Instruction::Add { dst, lhs, rhs },
+            AssignOp::SubAssign => Instruction::Sub { dst, lhs, rhs },
+            AssignOp::MulAssign => Instruction::Mul { dst, lhs, rhs },
+            AssignOp::DivAssign => Instruction::Div { dst, lhs, rhs },
+            AssignOp::ModAssign => Instruction::Mod { dst, lhs, rhs },
+            AssignOp::Assign => return Err(CompileError::InvalidAssignmentTarget),
+        };
+        self.proto.emit(inst, span);
+        Ok(())
+    }
+
+    /// 对装箱局部变量（Cell）执行赋值，并把表达式值写入 `dst`（T2.2）。
+    fn emit_boxed_assign(
+        &mut self,
+        cell: Reg,
+        op: AssignOp,
+        value: Reg,
+        dst: Reg,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        match op {
+            AssignOp::Assign => {
+                self.proto
+                    .emit(Instruction::CellSet { cell, src: value }, span);
+                // dst 恰好是变量槽本身时不能再写入（否则会把 Cell 覆盖掉）
+                if dst != cell {
+                    self.proto.emit(Instruction::Move { dst, src: value }, span);
+                }
+            }
+            other => {
+                let tmp = self.alloc_reg()?;
+                self.proto
+                    .emit(Instruction::CellGet { dst: tmp, cell }, span);
+                self.emit_compound_op(other, tmp, tmp, value, span)?;
+                self.proto
+                    .emit(Instruction::CellSet { cell, src: tmp }, span);
+                if dst != cell {
+                    self.proto.emit(Instruction::Move { dst, src: tmp }, span);
+                }
+                self.free_reg(tmp);
+            }
+        }
+        Ok(())
     }
 
     fn alloc_reg(&mut self) -> Result<Reg, CompileError> {
@@ -83,18 +277,20 @@ impl Compiler {
         }
     }
 
-    fn define_local(&mut self, name: String, reg: Reg) {
+    fn define_local(&mut self, name: String, reg: Reg, boxed: bool) {
         self.locals.push(Local {
             name,
             reg,
             depth: self.scope_depth,
+            boxed,
         });
     }
 
-    fn resolve_local(&self, name: &str) -> Option<Reg> {
+    /// 返回 (寄存器, 是否装箱)。
+    fn resolve_local(&self, name: &str) -> Option<(Reg, bool)> {
         for local in self.locals.iter().rev() {
             if local.name == name {
-                return Some(local.reg);
+                return Some((local.reg, local.boxed));
             }
         }
         None
@@ -103,6 +299,7 @@ impl Compiler {
     pub fn compile_program(program: &Program) -> Result<FunctionProto, CompileError> {
         let mut compiler = Compiler::new("<main>", 0);
         compiler.is_module_scope = true;
+        compiler.prepare_program(program);
         let ret_reg = compiler.alloc_reg()?;
 
         for stmt in &program.stmts {
@@ -123,18 +320,40 @@ impl Compiler {
                 name, init, span, ..
             } => {
                 let reg = self.alloc_reg()?;
+                let boxed = self.is_boxed(name);
                 if let Some(init_expr) = init {
                     self.compile_expr(init_expr, reg)?;
                 } else {
                     self.proto.emit(Instruction::LoadNil { dst: reg }, *span);
                 }
-                self.define_local(name.clone(), reg);
+                if boxed {
+                    // T2.2：被嵌套函数捕获的变量就地装箱，供闭包共享读写
+                    self.proto
+                        .emit(Instruction::MakeCell { dst: reg, src: reg }, *span);
+                }
+                self.define_local(name.clone(), reg, boxed);
                 // T2.4：模块顶层的绑定同时写入全局表，使 REPL 跨行求值可见；
                 // 函数体内的顶层局部变量不会外泄（is_module_scope 为 false）。
                 if self.is_module_scope && self.scope_depth == 0 {
                     let name_idx = self.proto.add_name(name.clone());
-                    self.proto
-                        .emit(Instruction::SetGlobal { name_idx, src: reg }, *span);
+                    if boxed {
+                        // 全局表里存值而不是 Cell；闭包后续修改 Cell 时该镜像可能过期
+                        // （同一脚本内始终走局部 Cell，见 SPEC_LANGUAGE §5.1）
+                        let tmp = self.alloc_reg()?;
+                        self.proto.emit(
+                            Instruction::CellGet {
+                                dst: tmp,
+                                cell: reg,
+                            },
+                            *span,
+                        );
+                        self.proto
+                            .emit(Instruction::SetGlobal { name_idx, src: tmp }, *span);
+                        self.free_reg(tmp);
+                    } else {
+                        self.proto
+                            .emit(Instruction::SetGlobal { name_idx, src: reg }, *span);
+                    }
                 }
                 if let Some(d) = dst {
                     self.proto
@@ -152,8 +371,16 @@ impl Compiler {
             } => {
                 let mut child = Compiler::new(name, params.len() as u16);
                 child.proto.is_async = *is_async;
+                child.prepare_body(body, self.visible_outer_names());
                 for (i, p) in params.iter().enumerate() {
-                    child.define_local(p.name.clone(), Reg(i as u16));
+                    let reg = Reg(i as u16);
+                    let boxed = child.is_boxed(&p.name);
+                    if boxed {
+                        child
+                            .proto
+                            .emit(Instruction::MakeCell { dst: reg, src: reg }, *span);
+                    }
+                    child.define_local(p.name.clone(), reg, boxed);
                 }
                 let body_reg = child.alloc_reg()?;
                 child.compile_expr(body, body_reg)?;
@@ -166,16 +393,13 @@ impl Compiler {
                 child.proto.register_count = child.max_reg;
 
                 let proto_idx = self.proto.child_protos.len() as u32;
-                self.proto.child_protos.push(child.proto);
+                let upvalues = self.resolve_child_upvalues(&child.upvalue_names)?;
+                let mut child_proto = child.proto;
+                child_proto.upvalues = upvalues.clone();
+                self.proto.child_protos.push(child_proto);
 
                 let fn_reg = self.alloc_reg()?;
-                self.proto.emit(
-                    Instruction::Closure {
-                        dst: fn_reg,
-                        proto_idx,
-                    },
-                    *span,
-                );
+                self.emit_closure(fn_reg, proto_idx, &upvalues, *span)?;
                 if self.scope_depth == 0 {
                     let name_idx = self.proto.add_name(name.clone());
                     self.proto.emit(
@@ -186,7 +410,7 @@ impl Compiler {
                         *span,
                     );
                 }
-                self.define_local(name.clone(), fn_reg);
+                self.define_local(name.clone(), fn_reg, false);
                 if let Some(d) = dst {
                     self.proto.emit(
                         Instruction::Move {
@@ -292,7 +516,19 @@ impl Compiler {
                 self.enter_scope();
                 match var {
                     ForVar::Single(name) => {
-                        self.define_local(name.clone(), val_reg);
+                        // T2.2：循环变量被闭包捕获时每轮重新装箱，
+                        // 因此每次迭代的闭包各自持有一个独立槽（类似 JS 的 let）
+                        let boxed = self.is_boxed(name);
+                        if boxed {
+                            self.proto.emit(
+                                Instruction::MakeCell {
+                                    dst: val_reg,
+                                    src: val_reg,
+                                },
+                                *span,
+                            );
+                        }
+                        self.define_local(name.clone(), val_reg, boxed);
                     }
                     ForVar::Tuple(names) => {
                         for (i, name) in names.iter().enumerate() {
@@ -314,7 +550,17 @@ impl Compiler {
                                 *span,
                             );
                             self.free_reg(idx_reg);
-                            self.define_local(name.clone(), item_reg);
+                            let boxed = self.is_boxed(name);
+                            if boxed {
+                                self.proto.emit(
+                                    Instruction::MakeCell {
+                                        dst: item_reg,
+                                        src: item_reg,
+                                    },
+                                    *span,
+                                );
+                            }
+                            self.define_local(name.clone(), item_reg, boxed);
                         }
                     }
                 }
@@ -462,8 +708,30 @@ impl Compiler {
             },
 
             Expr::Ident(name, _) => {
-                if let Some(local_reg) = self.resolve_local(name) {
-                    if local_reg != dst {
+                if let Some((local_reg, boxed)) = self.resolve_local(name) {
+                    if boxed {
+                        if local_reg == dst {
+                            // 目标就是变量槽本身：借道临时寄存器，避免覆盖 Cell
+                            let tmp = self.alloc_reg()?;
+                            self.proto.emit(
+                                Instruction::CellGet {
+                                    dst: tmp,
+                                    cell: local_reg,
+                                },
+                                span,
+                            );
+                            self.proto.emit(Instruction::Move { dst, src: tmp }, span);
+                            self.free_reg(tmp);
+                        } else {
+                            self.proto.emit(
+                                Instruction::CellGet {
+                                    dst,
+                                    cell: local_reg,
+                                },
+                                span,
+                            );
+                        }
+                    } else if local_reg != dst {
                         self.proto.emit(
                             Instruction::Move {
                                 dst,
@@ -472,6 +740,8 @@ impl Compiler {
                             span,
                         );
                     }
+                } else if let Some(idx) = self.resolve_upvalue(name) {
+                    self.proto.emit(Instruction::UpvalueGet { dst, idx }, span);
                 } else {
                     let name_idx = self.proto.add_name(name.clone());
                     self.proto
@@ -683,75 +953,53 @@ impl Compiler {
 
                 match &**target {
                     Expr::Ident(name, _) => {
-                        if let Some(local_reg) = self.resolve_local(name) {
+                        if let Some((local_reg, boxed)) = self.resolve_local(name) {
+                            if boxed {
+                                self.emit_boxed_assign(local_reg, *op, val_reg, dst, span)?;
+                            } else {
+                                match op {
+                                    AssignOp::Assign => {
+                                        self.proto.emit(
+                                            Instruction::Move {
+                                                dst: local_reg,
+                                                src: val_reg,
+                                            },
+                                            span,
+                                        );
+                                    }
+                                    compound => {
+                                        self.emit_compound_op(
+                                            *compound, local_reg, local_reg, val_reg, span,
+                                        )?;
+                                    }
+                                }
+                                self.proto.emit(
+                                    Instruction::Move {
+                                        dst,
+                                        src: local_reg,
+                                    },
+                                    span,
+                                );
+                            }
+                        } else if let Some(idx) = self.resolve_upvalue(name) {
                             match op {
                                 AssignOp::Assign => {
-                                    self.proto.emit(
-                                        Instruction::Move {
-                                            dst: local_reg,
-                                            src: val_reg,
-                                        },
-                                        span,
-                                    );
+                                    self.proto
+                                        .emit(Instruction::UpvalueSet { idx, src: val_reg }, span);
+                                    self.proto
+                                        .emit(Instruction::Move { dst, src: val_reg }, span);
                                 }
-                                AssignOp::AddAssign => {
-                                    self.proto.emit(
-                                        Instruction::Add {
-                                            dst: local_reg,
-                                            lhs: local_reg,
-                                            rhs: val_reg,
-                                        },
-                                        span,
-                                    );
-                                }
-                                AssignOp::SubAssign => {
-                                    self.proto.emit(
-                                        Instruction::Sub {
-                                            dst: local_reg,
-                                            lhs: local_reg,
-                                            rhs: val_reg,
-                                        },
-                                        span,
-                                    );
-                                }
-                                AssignOp::MulAssign => {
-                                    self.proto.emit(
-                                        Instruction::Mul {
-                                            dst: local_reg,
-                                            lhs: local_reg,
-                                            rhs: val_reg,
-                                        },
-                                        span,
-                                    );
-                                }
-                                AssignOp::DivAssign => {
-                                    self.proto.emit(
-                                        Instruction::Div {
-                                            dst: local_reg,
-                                            lhs: local_reg,
-                                            rhs: val_reg,
-                                        },
-                                        span,
-                                    );
-                                }
-                                AssignOp::ModAssign => {
-                                    self.proto.emit(
-                                        Instruction::Mod {
-                                            dst: local_reg,
-                                            lhs: local_reg,
-                                            rhs: val_reg,
-                                        },
-                                        span,
-                                    );
+                                compound => {
+                                    let tmp = self.alloc_reg()?;
+                                    self.proto
+                                        .emit(Instruction::UpvalueGet { dst: tmp, idx }, span);
+                                    self.emit_compound_op(*compound, tmp, tmp, val_reg, span)?;
+                                    self.proto
+                                        .emit(Instruction::UpvalueSet { idx, src: tmp }, span);
+                                    self.proto.emit(Instruction::Move { dst, src: tmp }, span);
+                                    self.free_reg(tmp);
                                 }
                             }
-                            self.proto.emit(
-                                Instruction::Move {
-                                    dst,
-                                    src: local_reg,
-                                },
-                                span,
-                            );
                         } else {
                             let name_idx = self.proto.add_name(name.clone());
                             self.proto.emit(
@@ -1006,8 +1254,16 @@ impl Compiler {
 
             Expr::Closure { params, body, .. } => {
                 let mut child = Compiler::new("<closure>", params.len() as u16);
+                child.prepare_body(body, self.visible_outer_names());
                 for (i, p) in params.iter().enumerate() {
-                    child.define_local(p.name.clone(), Reg(i as u16));
+                    let reg = Reg(i as u16);
+                    let boxed = child.is_boxed(&p.name);
+                    if boxed {
+                        child
+                            .proto
+                            .emit(Instruction::MakeCell { dst: reg, src: reg }, span);
+                    }
+                    child.define_local(p.name.clone(), reg, boxed);
                 }
                 let body_reg = child.alloc_reg()?;
                 child.compile_expr(body, body_reg)?;
@@ -1020,10 +1276,12 @@ impl Compiler {
                 child.proto.register_count = child.max_reg;
 
                 let proto_idx = self.proto.child_protos.len() as u32;
-                self.proto.child_protos.push(child.proto);
+                let upvalues = self.resolve_child_upvalues(&child.upvalue_names)?;
+                let mut child_proto = child.proto;
+                child_proto.upvalues = upvalues.clone();
+                self.proto.child_protos.push(child_proto);
 
-                self.proto
-                    .emit(Instruction::Closure { dst, proto_idx }, span);
+                self.emit_closure(dst, proto_idx, &upvalues, span)?;
             }
 
             Expr::If {
@@ -1100,8 +1358,26 @@ impl Compiler {
                             // Always matches
                         }
                         Pattern::Ident(name) => {
-                            // Bind variable to target
-                            self.define_local(name.clone(), t_reg);
+                            // 绑定到独立寄存器，避免装箱污染匹配目标（T2.2）
+                            let bind_reg = self.alloc_reg()?;
+                            self.proto.emit(
+                                Instruction::Move {
+                                    dst: bind_reg,
+                                    src: t_reg,
+                                },
+                                arm.span,
+                            );
+                            let boxed = self.is_boxed(name);
+                            if boxed {
+                                self.proto.emit(
+                                    Instruction::MakeCell {
+                                        dst: bind_reg,
+                                        src: bind_reg,
+                                    },
+                                    arm.span,
+                                );
+                            }
+                            self.define_local(name.clone(), bind_reg, boxed);
                         }
                         Pattern::Literal(lit) => {
                             let lit_reg = self.alloc_reg()?;
@@ -1276,5 +1552,136 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+}
+
+// ==========================================
+// T2.2 预扫描：哪些局部变量需要装箱
+// ==========================================
+
+/// 收集 `body` 内部**嵌套函数**中出现过的所有标识符。
+///
+/// 用途：决定本函数的哪些局部变量需要装箱成 `Value::Cell`。
+/// 这是一个**上近似**：多装箱只多一点开销，不会改变语义；而漏装箱会让闭包
+/// 捕获到值拷贝（写入不共享），因此宁可多。
+fn collect_names_in_nested_fns(body: &Expr) -> HashSet<String> {
+    let mut out = HashSet::new();
+    collect_expr(body, false, &mut out);
+    out
+}
+
+fn collect_expr(expr: &Expr, in_fn: bool, out: &mut HashSet<String>) {
+    match expr {
+        Expr::Literal(..) => {}
+        Expr::Ident(name, _) => {
+            if in_fn {
+                out.insert(name.clone());
+            }
+        }
+        Expr::Unary { expr, .. } => collect_expr(expr, in_fn, out),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_expr(lhs, in_fn, out);
+            collect_expr(rhs, in_fn, out);
+        }
+        Expr::Assign { target, value, .. } => {
+            collect_expr(target, in_fn, out);
+            collect_expr(value, in_fn, out);
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_expr(callee, in_fn, out);
+            for arg in args {
+                collect_expr(arg, in_fn, out);
+            }
+        }
+        Expr::Index { target, index, .. } => {
+            collect_expr(target, in_fn, out);
+            collect_expr(index, in_fn, out);
+        }
+        Expr::FieldAccess { target, .. } => collect_expr(target, in_fn, out),
+        Expr::Pipe { lhs, rhs, .. } | Expr::NullCoalesce { lhs, rhs, .. } => {
+            collect_expr(lhs, in_fn, out);
+            collect_expr(rhs, in_fn, out);
+        }
+        Expr::Array { items, .. } => {
+            for item in items {
+                collect_expr(item, in_fn, out);
+            }
+        }
+        Expr::Map { entries, .. } => {
+            for (key, value) in entries {
+                collect_expr(key, in_fn, out);
+                collect_expr(value, in_fn, out);
+            }
+        }
+        Expr::StringInterp { parts, .. } => {
+            for part in parts {
+                if let StringPart::Expr(expr) = part {
+                    collect_expr(expr, in_fn, out);
+                }
+            }
+        }
+        // 进入嵌套函数：其内部的一切标识符都算"被捕获的候选"
+        Expr::Closure { body, .. } => collect_expr(body, true, out),
+        Expr::If {
+            cond,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_expr(cond, in_fn, out);
+            collect_expr(then_branch, in_fn, out);
+            if let Some(else_branch) = else_branch {
+                collect_expr(else_branch, in_fn, out);
+            }
+        }
+        Expr::Block {
+            stmts, trailing, ..
+        } => {
+            for stmt in stmts {
+                collect_stmt(stmt, in_fn, out);
+            }
+            if let Some(trailing) = trailing {
+                collect_expr(trailing, in_fn, out);
+            }
+        }
+        Expr::Match { target, arms, .. } => {
+            collect_expr(target, in_fn, out);
+            for arm in arms {
+                if let Pattern::Compare { value, .. } = &arm.pattern {
+                    collect_expr(value, in_fn, out);
+                }
+                if let Some(guard) = &arm.guard {
+                    collect_expr(guard, in_fn, out);
+                }
+                collect_expr(&arm.body, in_fn, out);
+            }
+        }
+        Expr::Await { expr, .. } | Expr::Spawn { expr, .. } => collect_expr(expr, in_fn, out),
+    }
+}
+
+fn collect_stmt(stmt: &Stmt, in_fn: bool, out: &mut HashSet<String>) {
+    match stmt {
+        Stmt::Let { init, .. } => {
+            if let Some(init) = init {
+                collect_expr(init, in_fn, out);
+            }
+        }
+        Stmt::Fn { body, .. } => collect_expr(body, true, out),
+        Stmt::While { cond, body, .. } => {
+            collect_expr(cond, in_fn, out);
+            collect_expr(body, in_fn, out);
+        }
+        Stmt::For { iter, body, .. } => {
+            collect_expr(iter, in_fn, out);
+            collect_expr(body, in_fn, out);
+        }
+        Stmt::Return { value, .. } => {
+            if let Some(value) = value {
+                collect_expr(value, in_fn, out);
+            }
+        }
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Expr { expr, .. } => collect_expr(expr, in_fn, out),
     }
 }

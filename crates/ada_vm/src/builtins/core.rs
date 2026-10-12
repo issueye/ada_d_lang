@@ -52,6 +52,18 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>) {
                 Value::Closure(_) | Value::NativeFn { .. } | Value::Intrinsic { .. } => "function",
                 Value::Task(_) => "task",
                 Value::Iterator(_) => "iterator",
+                // 内部值：不应出现在用户可见路径，降级为底层类型名
+                Value::Cell(cell) => match &*cell.read().unwrap() {
+                    Value::Bool(_) => "bool",
+                    Value::Int(_) => "int",
+                    Value::Float(_) => "float",
+                    Value::String(_) => "string",
+                    Value::Array(_) => "array",
+                    Value::Map(_) => "map",
+                    Value::Task(_) => "task",
+                    Value::Iterator(_) => "iterator",
+                    _ => "function",
+                },
             };
             Ok(Value::string(t))
         }),

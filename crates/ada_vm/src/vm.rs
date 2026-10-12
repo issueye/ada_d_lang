@@ -84,6 +84,8 @@ struct CallFrame {
     ip: usize,
     base_reg: usize,
     dst_reg: Option<usize>,
+    /// 当前闭包捕获的 upvalue 槽（T2.2）；主帧为空
+    captures: Vec<Value>,
 }
 
 pub struct Vm {
@@ -160,6 +162,7 @@ impl Vm {
             ip: 0,
             base_reg: 0,
             dst_reg: None,
+            captures: Vec::new(),
         });
 
         // T2.6：每次执行都从配置的预算重新装填燃料，
@@ -197,6 +200,7 @@ impl Vm {
                     ip: 0,
                     base_reg: base,
                     dst_reg: None,
+                    captures: closure.captures.clone(),
                 });
                 let stop_depth = self.frames.len() - 1;
                 let result = self.run_loop_until(stop_depth);
@@ -803,6 +807,7 @@ impl Vm {
                                 ip: 0,
                                 base_reg: new_base,
                                 dst_reg: Some(base + dst.0 as usize),
+                                captures: closure.captures.clone(),
                             });
                         }
                         Value::NativeFn { callback, .. } => {
@@ -1312,8 +1317,73 @@ impl Vm {
                     let child_proto = Arc::new(
                         self.frames[frame_idx].proto.child_protos[proto_idx as usize].clone(),
                     );
-                    self.registers[base + dst.0 as usize] =
-                        Value::Closure(Arc::new(Closure { proto: child_proto }));
+                    self.registers[base + dst.0 as usize] = Value::Closure(Arc::new(Closure {
+                        proto: child_proto,
+                        captures: Vec::new(),
+                    }));
+                }
+
+                Instruction::MakeClosure {
+                    dst,
+                    proto_idx,
+                    upvalue_start,
+                    upvalue_count,
+                } => {
+                    let child_proto = Arc::new(
+                        self.frames[frame_idx].proto.child_protos[proto_idx as usize].clone(),
+                    );
+                    // T2.2：从连续寄存器窗口取出捕获（都是 Value::Cell）
+                    let start = base + upvalue_start.0 as usize;
+                    let captures = self.registers[start..start + upvalue_count as usize].to_vec();
+                    self.registers[base + dst.0 as usize] = Value::Closure(Arc::new(Closure {
+                        proto: child_proto,
+                        captures,
+                    }));
+                }
+
+                Instruction::MakeCell { dst, src } => {
+                    let value = self.registers[base + src.0 as usize].clone();
+                    self.registers[base + dst.0 as usize] = Value::cell(value);
+                }
+
+                Instruction::CellGet { dst, cell } => {
+                    let value = self.registers[base + cell.0 as usize].deref_cell();
+                    self.registers[base + dst.0 as usize] = value;
+                }
+
+                Instruction::CellSet { cell, src } => {
+                    let value = self.registers[base + src.0 as usize].clone();
+                    let handle = self.registers[base + cell.0 as usize].clone();
+                    if !handle.write_cell(value) {
+                        return Err(VmError::TypeError(
+                            "internal error: CellSet on a non-cell slot".to_string(),
+                        ));
+                    }
+                }
+
+                Instruction::UpvalueGet { dst, idx } => {
+                    let captures = &self.frames[frame_idx].captures;
+                    let value = captures
+                        .get(idx as usize)
+                        .map(|slot| slot.deref_cell())
+                        .unwrap_or(Value::Nil);
+                    self.registers[base + dst.0 as usize] = value;
+                }
+
+                Instruction::UpvalueSet { idx, src } => {
+                    let value = self.registers[base + src.0 as usize].clone();
+                    let slot = self.frames[frame_idx]
+                        .captures
+                        .get(idx as usize)
+                        .cloned()
+                        .ok_or_else(|| {
+                            VmError::TypeError(format!("internal error: missing upvalue #{idx}"))
+                        })?;
+                    if !slot.write_cell(value) {
+                        return Err(VmError::TypeError(
+                            "internal error: upvalue slot is not a cell".to_string(),
+                        ));
+                    }
                 }
 
                 Instruction::Spawn { dst, expr } => {

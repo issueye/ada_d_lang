@@ -2,7 +2,7 @@ pub mod compiler;
 pub mod instruction;
 
 pub use compiler::{CompileError, Compiler};
-pub use instruction::{Constant, FunctionProto, Instruction, Reg};
+pub use instruction::{Constant, FunctionProto, Instruction, Reg, UpvalueDesc};
 
 #[cfg(test)]
 mod tests {

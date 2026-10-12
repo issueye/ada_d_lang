@@ -8,6 +8,9 @@ pub type NativeCallback = Arc<dyn Fn(&[Value]) -> Result<Value, String> + Send +
 #[derive(Clone)]
 pub struct Closure {
     pub proto: Arc<FunctionProto>,
+    /// 捕获的 upvalue（T2.2）：每个捕获都是一个 `Value::Cell`，
+    /// 因此闭包与外层函数共享同一个可写变量槽。
+    pub captures: Vec<Value>,
 }
 
 impl PartialEq for Closure {
@@ -129,6 +132,9 @@ pub enum Value {
         receiver: Option<Box<Value>>,
         args: Vec<Value>,
     },
+    /// 被闭包捕获的变量槽（T2.2）：内外共享同一个 `RwLock`，因此写入互相可见。
+    /// 正常路径上不会泄漏到用户代码——只出现在局部寄存器与闭包捕获表里。
+    Cell(Arc<RwLock<Value>>),
     Task(Arc<RwLock<Value>>),
     Iterator(Arc<RwLock<IteratorState>>),
 }
@@ -195,6 +201,30 @@ impl Value {
             kind,
             receiver: None,
             args: Vec::new(),
+        }
+    }
+
+    /// 把值包成可共享的变量槽（T2.2）。
+    pub fn cell(value: Value) -> Self {
+        Value::Cell(Arc::new(RwLock::new(value)))
+    }
+
+    /// 若为 Cell 则读出内部值（并返回 `true`）；否则克隆自身。
+    pub fn deref_cell(&self) -> Value {
+        match self {
+            Value::Cell(cell) => cell.read().unwrap().clone(),
+            other => other.clone(),
+        }
+    }
+
+    /// 若为 Cell 则写入内部值；返回是否写成功。
+    pub fn write_cell(&self, value: Value) -> bool {
+        match self {
+            Value::Cell(cell) => {
+                *cell.write().unwrap() = value;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -282,6 +312,7 @@ impl Value {
             Value::Intrinsic { kind, .. } => {
                 serde_json::Value::String(format!("<adapter {}>", kind.name()))
             }
+            Value::Cell(cell) => cell.read().unwrap().to_json(),
         }
     }
 
@@ -332,6 +363,9 @@ impl PartialEq for Value {
             }
             (Value::Iterator(a), Value::Iterator(b)) => Arc::ptr_eq(a, b),
             (Value::Intrinsic { kind: a, .. }, Value::Intrinsic { kind: b, .. }) => a == b,
+            (Value::Cell(a), Value::Cell(b)) => {
+                Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
+            }
             _ => false,
         }
     }
@@ -358,6 +392,7 @@ impl fmt::Debug for Value {
             Value::Task(t) => write!(f, "Task({:?})", t.read().unwrap()),
             Value::Iterator(it) => write!(f, "Iterator({:?})", it.read().unwrap()),
             Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Cell(cell) => write!(f, "<cell {:?}>", cell.read().unwrap()),
         }
     }
 }
@@ -397,6 +432,7 @@ impl fmt::Display for Value {
             Value::Task(t) => write!(f, "<task {}>", t.read().unwrap()),
             Value::Iterator(_) => write!(f, "<iterator>"),
             Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Cell(cell) => write!(f, "{}", cell.read().unwrap()),
         }
     }
 }
