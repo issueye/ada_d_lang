@@ -4,6 +4,7 @@
 fib	1275420
 iterator_pipeline	1100009
 json_roundtrip	45012
+method_calls	1140199
 numeric_loop	1400009
 string_concat	100010
 while_loop	2400011

@@ -211,6 +211,23 @@ fn compare_values(op: BinOp, a: &Value, b: &Value) -> Result<bool, VmError> {
     })
 }
 
+/// T6.8：哪些字段名值得进入方法分派缓存。
+///
+/// 只列**原型方法**（容器/任务/迭代器上的内建方法）。这里刻意不含适配器名
+/// （`map`/`filter` 等，它们在 `GetField` 里更早处理且构造成本低）、也不含
+/// 任意用户键（否则 `obj.随机键` 会无界增长）。
+fn is_cacheable_method(name: &str) -> bool {
+    matches!(
+        name,
+        // array / map / string 原型
+        "push" | "pop" | "insert" | "remove" | "contains" | "reverse" | "sort"
+            | "contains_key" | "merge" | "keys" | "values" | "entries"
+            | "trim" | "to_upper" | "to_lower" | "split" | "replace" | "slice"
+            | "starts_with" | "ends_with" | "chars" | "chars_with_idx" | "lines"
+            // 任务与迭代器
+            | "cancel" | "timeout" | "iter" | "next"
+    )
+}
 /// 数值求和（全局 `sum` / `.sum()` / 迭代器适配器共用）。
 /// 全整数保持 Int；出现 Float 则整体 Float；非数值元素忽略（与既有 `sum` 行为一致）。
 /// 整数累加使用 checked 运算，溢出返回错误而不是 panic。
@@ -288,6 +305,13 @@ pub struct Vm {
     immutable_declared: HashSet<String>,
     /// 宿主/内建注册的全局名（T8.3）：脚本不得覆盖（宿主用 `set_global` 注入仍可）
     immutable_host: HashSet<String>,
+    /// 方法分派缓存（T6.8）：`字段名 -> (接收者, 已绑定的方法闭包)`。
+    ///
+    /// `xs.push(i)` 这类方法访问每次都会新建一个捕获接收者的闭包（实验测得 debug 下
+    /// 每次约 410 ns）。这里只缓存**原型方法名**（白名单，条目数有界），并且要求
+    /// 接收者与缓存中的**同一个对象**（容器按 `Arc` 指针比较）——因此复用闭包不会
+    /// 把方法绑到别的对象上。每次 `execute` 开始时清空，避免跨求值持有容器。
+    field_cache: HashMap<String, (Value, Value)>,
     /// 本次执行已计费的近似字节数（M5 / T5.3，与原型方法共享计数器）
     budget: MemoryBudget,
     /// 本次执行的起始时刻（M5 / T5.4）
@@ -337,6 +361,7 @@ impl Vm {
             denied_globals: Vec::new(),
             immutable_declared: HashSet::new(),
             immutable_host: HashSet::new(),
+            field_cache: HashMap::new(),
             budget: MemoryBudget::with_limit(None),
             exec_started: std::time::Instant::now(),
             steps_since_clock_check: 0,
@@ -550,6 +575,8 @@ impl Vm {
         self.instructions_executed = 0;
         self.last_error_span = None;
         self.last_failed_task_span = None;
+        // T6.8：方法分派缓存不跨求值保留（否则会一直持有上一次的容器）
+        self.field_cache.clear();
         self.refresh_metering();
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2384,6 +2411,27 @@ impl Vm {
                     field_idx,
                     optional,
                 } => {
+                    // T6.8：方法分派缓存。命中时只需一次 `Value` 克隆，避免重建
+                    // 捕获接收者的闭包（实验测得每次约 410 ns，debug 构建）。
+                    // 只在"同一个接收者对象"上复用（容器按 `Arc` 指针比较），
+                    // 因此不会把方法绑到别的对象上；缓存不跨求值保留。
+                    let cached = {
+                        let field = &self.frames[frame_idx].proto.names[field_idx as usize];
+                        if is_cacheable_method(field) {
+                            let t = &self.registers[base + target.0 as usize];
+                            self.field_cache
+                                .get(field)
+                                .filter(|(cached_receiver, _)| cached_receiver == t)
+                                .map(|(_, callee)| callee.clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(callee) = cached {
+                        self.registers[base + dst.0 as usize] = callee;
+                        continue;
+                    }
+
                     let t = &self.registers[base + target.0 as usize];
                     let field = &self.frames[frame_idx].proto.names[field_idx as usize];
 
@@ -2748,6 +2796,15 @@ impl Vm {
                         }
                         _ => Value::Nil,
                     };
+                    // T6.8：只有在"确实构造了一个原生方法闭包"时才缓存（`len` 这类
+                    // 直接返回值的不必缓存；用户键名不在白名单内，缓存不会无界增长）。
+                    if matches!(res, Value::NativeFn(_)) {
+                        let name = self.frames[frame_idx].proto.names[field_idx as usize].clone();
+                        if is_cacheable_method(&name) {
+                            let receiver = self.registers[base + target.0 as usize].clone();
+                            self.field_cache.insert(name, (receiver, res.clone()));
+                        }
+                    }
                     self.registers[base + dst.0 as usize] = res;
                 }
 

@@ -150,6 +150,8 @@ fn benchmark_programs_produce_the_expected_values() {
         ("json_roundtrip", "18000"),
         // sum(0..299999) = 299999 × 300000 / 2 = 44,999,850,000
         ("while_loop", "44999850000"),
+        // 方法调用密集：xs.len = 60000
+        ("method_calls", "60000"),
     ];
     for (name, expected) in expectations {
         let path = programs_dir().join(format!("{name}.ada"));

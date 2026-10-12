@@ -72,6 +72,10 @@ fn ada_benches(c: &mut Criterion) {
     group.bench_function("while_loop", |b| {
         let proto = compiled("while_loop.ada");
         b.iter(|| exec(&proto))
+    });    // T6.8：方法调用密集（`xs.push(i)` 等），覆盖方法分派缓存
+    group.bench_function("method_calls", |b| {
+        let proto = compiled("method_calls.ada");
+        b.iter(|| exec(&proto))
     });
     // 冷启动（编译 + 执行）单独一组：嵌入场景的真实成本
     group.bench_function("cold_start_numeric_loop", |b| {
