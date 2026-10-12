@@ -12,23 +12,106 @@ fn top_level_bindings_persist_across_evaluations() {
     let second: i64 = engine.eval("a + 1").unwrap();
     assert_eq!(second, 42);
 
-    let third: i64 = engine.eval("a = a + 1\na").unwrap();
-    assert_eq!(third, 42);
-    let fourth: i64 = engine.eval("a").unwrap();
-    assert_eq!(fourth, 42);
+    // T8.3：`let` 绑定跨轮次同样不可改写（此前会静默写入全局表）
+    let rejected = engine.eval::<Value>("a = a + 1").unwrap_err();
+    assert!(
+        matches!(&rejected, Error::Vm(VmError::TypeError(msg))
+            if msg.contains("immutable variable 'a'")),
+        "expected an immutability error, got {rejected:?}"
+    );
+    assert_eq!(
+        engine.eval::<i64>("a").unwrap(),
+        41,
+        "value must be unchanged"
+    );
+
+    // `mut` 声明则允许跨轮写入
+    engine.eval::<Value>("mut total = 1").unwrap();
+    assert_eq!(engine.eval::<i64>("total += 41\ntotal").unwrap(), 42);
 }
 
 #[test]
-fn immutability_is_enforced_within_a_program_but_not_across_evaluations() {
+fn immutability_is_enforced_within_and_across_evaluations() {
     let mut engine = Engine::new();
     // 同一程序内：`let` 绑定不可写（T3.1，编译期报错）
     let err = engine.eval::<Value>("let b = 1\nb = 2").unwrap_err();
     assert!(matches!(err, Error::Compile(_)), "got {err:?}");
 
-    // 跨轮求值：上一轮的顶层绑定已落到全局表，而全局变量不带可变性信息（缺口 G-L17）
+    // 跨轮求值（T8.3，缺口 G-L17 已修复）：上一轮的 `let` 落到全局表时带上了
+    // 不可变标记，因此再赋值报运行时错误而不是静默改写
     engine.eval::<Value>("let c = 1").unwrap();
-    let updated: i64 = engine.eval("c = 5\nc").unwrap();
-    assert_eq!(updated, 5);
+    let rejected = engine.eval::<Value>("c = 5").unwrap_err();
+    assert!(
+        matches!(&rejected, Error::Vm(VmError::TypeError(msg))
+            if msg.contains("declared with `let` in an earlier evaluation")),
+        "expected a cross-evaluation immutability error, got {rejected:?}"
+    );
+    assert_eq!(engine.eval::<i64>("c").unwrap(), 1);
+
+    // 重新用 `mut` 声明可以夺回可写性（同名 `let` 声明则继续锁定）
+    engine.eval::<Value>("mut c = 10").unwrap();
+    assert_eq!(engine.eval::<i64>("c = 11\nc").unwrap(), 11);
+}
+
+#[test]
+fn builtin_and_module_names_cannot_be_overwritten_by_assignment() {
+    let mut engine = Engine::new();
+    // 此前 `json = 1` / `len = 1` 会静默把模块与内建函数换掉
+    for source in ["json = 1", "len = 1", "println = 1"] {
+        let err = engine.eval::<Value>(source).unwrap_err();
+        assert!(
+            matches!(&err, Error::Vm(VmError::TypeError(msg))
+                if msg.contains("built-in or host-injected")),
+            "{source}: expected a builtin-protection error, got {err:?}"
+        );
+    }
+    // 模块仍然可用
+    assert_eq!(
+        engine.eval::<Value>("json.valid(\"{}\")").unwrap(),
+        Value::Bool(true)
+    );
+
+    // **声明**则可以接管内建名：`mut sum = 0` 是 AI 规格里的常见写法
+    assert_eq!(
+        engine
+            .eval::<i64>("mut sum = 0\nfor i in range(1, 5) { sum += i }\nsum")
+            .unwrap(),
+        10
+    );
+    // 接管之后，这个名字就归脚本了（跨轮次也可写）
+    assert_eq!(engine.eval::<i64>("sum = 100\nsum").unwrap(), 100);
+
+    // 宿主注入的全局同样受保护，但宿主自身可以再次注入
+    engine.register_fn("host_fn", |_| Ok(Value::Int(7)));
+    assert_eq!(engine.eval::<i64>("host_fn()").unwrap(), 7);
+    let err = engine.eval::<Value>("host_fn = 1").unwrap_err();
+    assert!(
+        matches!(&err, Error::Vm(VmError::TypeError(msg))
+        if msg.contains("built-in or host-injected")),
+        "got {err:?}"
+    );
+    engine.set_global("host_fn", Value::Int(9));
+    assert_eq!(
+        engine.eval::<i64>("host_fn").unwrap(),
+        9,
+        "宿主再次注入应当生效"
+    );
+    // 注入之后脚本依然不能改写它
+    assert!(engine.eval::<Value>("host_fn = 1").is_err());
+}
+
+#[test]
+fn function_names_are_immutable_bindings() {
+    let mut engine = Engine::new();
+    // 函数名与 `let` 一样是不可变绑定（同程序内由编译器拦下）
+    let err = engine.eval::<Value>("fn f() = 1\nf = 2").unwrap_err();
+    assert!(matches!(err, Error::Compile(_)), "got {err:?}");
+
+    // 重新声明是允许的（遮蔽，不报错）
+    assert_eq!(
+        engine.eval::<i64>("fn g() = 1\nfn g() = 2\ng()").unwrap(),
+        2
+    );
 }
 
 #[test]

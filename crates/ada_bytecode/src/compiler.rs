@@ -1,4 +1,4 @@
-use crate::instruction::{Constant, FunctionProto, Instruction, Reg, UpvalueDesc};
+use crate::instruction::{Constant, FunctionProto, GlobalWrite, Instruction, Reg, UpvalueDesc};
 use ada_ast::*;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
@@ -388,12 +388,26 @@ impl Compiler {
                             },
                             *span,
                         );
-                        self.proto
-                            .emit(Instruction::SetGlobal { name_idx, src: tmp }, *span);
+                        self.proto.emit(
+                            Instruction::SetGlobal {
+                                name_idx,
+                                src: tmp,
+                                // T8.3：`let` 声明由脚本接管并标记为不可变，
+                                // 因此跨轮求值（REPL）不能再改写它
+                                kind: global_write_kind(*is_mut),
+                            },
+                            *span,
+                        );
                         self.free_reg(tmp);
                     } else {
-                        self.proto
-                            .emit(Instruction::SetGlobal { name_idx, src: reg }, *span);
+                        self.proto.emit(
+                            Instruction::SetGlobal {
+                                name_idx,
+                                src: reg,
+                                kind: global_write_kind(*is_mut),
+                            },
+                            *span,
+                        );
                     }
                 }
                 if let Some(d) = dst {
@@ -447,11 +461,16 @@ impl Compiler {
                         Instruction::SetGlobal {
                             name_idx,
                             src: fn_reg,
+                            // 顶层 `fn` 声明：函数名由脚本接管，此后不可改写
+                            kind: GlobalWrite::DeclareImmutable,
                         },
                         *span,
                     );
                 }
-                self.define_local(name.clone(), fn_reg, false, true);
+                // T8.3：函数名是**不可变**绑定（与 `let` 一致）。此前这里是可变局部，
+                // 于是同一脚本里 `f = 2` 能改写函数名，而跨轮求值又被全局规则拦住——
+                // 两处口径不一致。需要"换实现"时重新写一个 `fn` 声明（声明会遮蔽，不报错）。
+                self.define_local(name.clone(), fn_reg, false, false);
                 if let Some(d) = dst {
                     self.proto.emit(
                         Instruction::Move {
@@ -1067,50 +1086,121 @@ impl Compiler {
                             }
                         } else {
                             let name_idx = self.proto.add_name(name.clone());
+                            // T8.4 修复：复合赋值此前在这里被丢弃——`total += 1` 会编译成
+                            // `total = 1`（静默错值）。先读回当前全局值，再应用运算。
+                            let result_reg = if matches!(op, AssignOp::Assign) {
+                                val_reg
+                            } else {
+                                let tmp = self.alloc_reg()?;
+                                self.proto
+                                    .emit(Instruction::GetGlobal { dst: tmp, name_idx }, span);
+                                self.emit_compound_op(*op, tmp, tmp, val_reg, span)?;
+                                tmp
+                            };
                             self.proto.emit(
                                 Instruction::SetGlobal {
                                     name_idx,
-                                    src: val_reg,
+                                    src: result_reg,
+                                    // 普通赋值（未声明名的首次赋值，或跨轮次写入）
+                                    kind: GlobalWrite::Assign,
                                 },
                                 span,
                             );
-                            self.proto
-                                .emit(Instruction::Move { dst, src: val_reg }, span);
+                            self.proto.emit(
+                                Instruction::Move {
+                                    dst,
+                                    src: result_reg,
+                                },
+                                span,
+                            );
+                            if result_reg != val_reg {
+                                self.free_reg(result_reg);
+                            }
                         }
                     }
                     Expr::FieldAccess { target, field, .. } => {
                         let t_reg = self.alloc_reg()?;
                         self.compile_expr(target, t_reg)?;
                         let field_idx = self.proto.add_name(field.clone());
+                        // T8.4 修复：`cfg.n += 1` 此前编译成 `cfg.n = 1`（静默错值）
+                        let result_reg = if matches!(op, AssignOp::Assign) {
+                            val_reg
+                        } else {
+                            let tmp = self.alloc_reg()?;
+                            self.proto.emit(
+                                Instruction::GetField {
+                                    dst: tmp,
+                                    target: t_reg,
+                                    field_idx,
+                                    optional: false,
+                                },
+                                span,
+                            );
+                            self.emit_compound_op(*op, tmp, tmp, val_reg, span)?;
+                            tmp
+                        };
                         self.proto.emit(
                             Instruction::SetField {
                                 target: t_reg,
                                 field_idx,
-                                val: val_reg,
+                                val: result_reg,
                             },
                             span,
                         );
-                        self.proto
-                            .emit(Instruction::Move { dst, src: val_reg }, span);
+                        self.proto.emit(
+                            Instruction::Move {
+                                dst,
+                                src: result_reg,
+                            },
+                            span,
+                        );
                         self.free_reg(t_reg);
+                        if result_reg != val_reg {
+                            self.free_reg(result_reg);
+                        }
                     }
                     Expr::Index { target, index, .. } => {
                         let t_reg = self.alloc_reg()?;
                         self.compile_expr(target, t_reg)?;
                         let i_reg = self.alloc_reg()?;
                         self.compile_expr(index, i_reg)?;
+                        // T8.4 修复：`m[k] += 1` 此前编译成 `m[k] = 1`（计数器惯用法
+                        // 会静默失效）
+                        let result_reg = if matches!(op, AssignOp::Assign) {
+                            val_reg
+                        } else {
+                            let tmp = self.alloc_reg()?;
+                            self.proto.emit(
+                                Instruction::GetIndex {
+                                    dst: tmp,
+                                    target: t_reg,
+                                    index: i_reg,
+                                },
+                                span,
+                            );
+                            self.emit_compound_op(*op, tmp, tmp, val_reg, span)?;
+                            tmp
+                        };
                         self.proto.emit(
                             Instruction::SetIndex {
                                 target: t_reg,
                                 index: i_reg,
-                                val: val_reg,
+                                val: result_reg,
                             },
                             span,
                         );
-                        self.proto
-                            .emit(Instruction::Move { dst, src: val_reg }, span);
+                        self.proto.emit(
+                            Instruction::Move {
+                                dst,
+                                src: result_reg,
+                            },
+                            span,
+                        );
                         self.free_reg(i_reg);
                         self.free_reg(t_reg);
+                        if result_reg != val_reg {
+                            self.free_reg(result_reg);
+                        }
                     }
                     _ => return Err(CompileError::InvalidAssignmentTarget { span }),
                 }
@@ -1806,5 +1896,17 @@ fn collect_stmt(stmt: &Stmt, in_fn: bool, out: &mut HashSet<String>) {
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Expr { expr, .. } => collect_expr(expr, in_fn, out),
+    }
+}
+
+/// T8.3：把"是否 `mut`"翻译成全局写入种类。
+///
+/// **声明**（`let`/`mut`）让脚本接管该名字：可以从内建名手里夺过来，也会重置
+/// 之前的不可变标记。**赋值**（`Assign`）才受"不可变全局 / 内建名"保护。
+fn global_write_kind(is_mut: bool) -> GlobalWrite {
+    if is_mut {
+        GlobalWrite::DeclareMut
+    } else {
+        GlobalWrite::DeclareImmutable
     }
 }

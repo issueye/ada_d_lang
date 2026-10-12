@@ -380,3 +380,49 @@ fn loop_keyword_errors_carry_a_position() {
     let span = err.span().expect("compile error should carry a span");
     assert_eq!(span.line, 2, "break is on line 2");
 }
+
+// ============================================================ T8.4 复合赋值的目标类型
+
+#[test]
+fn compound_assignment_honours_the_operator_for_every_target_kind() {
+    // 回归：字段/索引/（跨轮）全局的复合赋值此前被编译成普通赋值——
+    // `cfg.n += 41` 得到 41、`a[0] += 41` 得到 41、计数器 `m.k += 1` 恒为 1。
+    // 局部变量与闭包 upvalue 一直是对的，所以只有这些目标出问题。
+    assert_eq!(ok("mut cfg = { n: 1 }\ncfg.n += 41\ncfg.n"), Value::Int(42));
+    assert_eq!(ok("mut a = [1, 2]\na[0] += 41\na[0]"), Value::Int(42));
+    assert_eq!(
+        ok("mut m = { k: 0 }\nfor i in 5 { m.k += 1 }\nm.k"),
+        Value::Int(5)
+    );
+    assert_eq!(
+        ok("mut m = {}\nfor i in 5 { m[\"k\"] = (m[\"k\"] ?? 0) + 1 }\nm[\"k\"]"),
+        Value::Int(5),
+        "显式写法与复合赋值必须等价"
+    );
+
+    // 全部复合运算符
+    assert_eq!(
+        ok("mut a = [10, 2]\na[0] -= 3\na[1] *= 5\na[0] + a[1]"),
+        Value::Int(17)
+    );
+    assert_eq!(
+        ok("mut cfg = { n: 10 }\ncfg.n /= 2\ncfg.n %= 3\ncfg.n"),
+        Value::Int(2)
+    );
+
+    // 字符串拼接走同一条路径
+    assert_eq!(
+        ok("mut o = { s: \"a\" }\no.s += \"b\"\no.s"),
+        Value::string("ab")
+    );
+
+    // 普通赋值不受影响
+    assert_eq!(ok("mut cfg = { n: 1 }\ncfg.n = 9\ncfg.n"), Value::Int(9));
+    assert_eq!(ok("mut a = [1, 2]\na[0] = 9\na[0]"), Value::Int(9));
+
+    // 缺失字段不再静默成功（之前会写入 RHS）
+    expect_type_error(
+        "mut cfg = { a: 1 }\ncfg.missing += 1",
+        "Cannot add nil and 1",
+    );
+}

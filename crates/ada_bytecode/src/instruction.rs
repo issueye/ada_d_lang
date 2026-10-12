@@ -10,6 +10,16 @@ impl fmt::Display for Reg {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalWrite {
+    /// 普通赋值（`a = 1`、`a += 1`）：受"不可变全局"与"内建名"保护。
+    Assign,
+    /// 模块顶层 `mut x = …`：脚本**接管**该名字（可覆盖内建名）。
+    DeclareMut,
+    /// 模块顶层 `let x = …` / `fn x`：脚本接管该名字，且此后脚本不得再赋值。
+    DeclareImmutable,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     Int(i64),
@@ -179,6 +189,8 @@ pub enum Instruction {
     SetGlobal {
         name_idx: u32,
         src: Reg,
+        /// 这次全局写入的**种类**（T8.3）：声明会「接管」该名字，赋值才受保护。
+        kind: GlobalWrite,
     },
 
     // Data structures

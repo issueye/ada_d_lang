@@ -5,9 +5,9 @@ use crate::task::{
 };
 use crate::value::{AdapterKind, AsyncKind, Closure, IteratorState, Value};
 use ada_ast::Span;
-use ada_bytecode::{Constant, FunctionProto, Instruction};
+use ada_bytecode::{Constant, FunctionProto, GlobalWrite, Instruction};
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -256,6 +256,10 @@ pub struct Vm {
     sandbox: Sandbox,
     /// 被沙箱拒绝的全局名（存在但不暴露，访问时报 `CapabilityDenied`）
     denied_globals: Vec<String>,
+    /// 由 `let` 声明过的全局名（T8.3）：跨轮求值时不得再被脚本赋值
+    immutable_declared: HashSet<String>,
+    /// 宿主/内建注册的全局名（T8.3）：脚本不得覆盖（宿主用 `set_global` 注入仍可）
+    immutable_host: HashSet<String>,
     /// 本次执行已计费的近似字节数（M5 / T5.3，与原型方法共享计数器）
     budget: MemoryBudget,
     /// 本次执行的起始时刻（M5 / T5.4）
@@ -303,6 +307,8 @@ impl Vm {
             pending_resume: None,
             sandbox,
             denied_globals: Vec::new(),
+            immutable_declared: HashSet::new(),
+            immutable_host: HashSet::new(),
             budget: MemoryBudget::with_limit(None),
             exec_started: std::time::Instant::now(),
             steps_since_clock_check: 0,
@@ -377,6 +383,10 @@ impl Vm {
                 self.denied_globals.push(name.to_string());
             }
         }
+        // T8.3：内建函数与模块名进"宿主不可变"集合——脚本 `json = 1` 这类覆盖
+        // 此前是静默生效的，会把模块整个换掉。宿主仍可通过 `set_global` 注入。
+        self.immutable_declared.clear();
+        self.immutable_host = self.globals.keys().cloned().collect();
         self.refresh_metering();
     }
 
@@ -468,7 +478,10 @@ impl Vm {
     }
 
     pub fn set_global(&mut self, name: impl Into<String>, val: Value) {
-        self.globals.insert(name.into(), val);
+        let name = name.into();
+        // T8.3：宿主注入的名字默认受保护，脚本不能覆盖（宿主可再次 set_global）
+        self.immutable_host.insert(name.clone());
+        self.globals.insert(name, val);
     }
 
     pub fn get_global(&self, name: &str) -> Option<&Value> {
@@ -2026,9 +2039,45 @@ impl Vm {
                     }
                 }
 
-                Instruction::SetGlobal { name_idx, src } => {
+                Instruction::SetGlobal {
+                    name_idx,
+                    src,
+                    kind,
+                } => {
                     let name = self.frames[frame_idx].proto.names[name_idx as usize].clone();
                     let val = self.registers[base + src.0 as usize].clone();
+                    // T8.3：区分"声明"与"赋值"。
+                    //
+                    // - 声明（顶层 `let`/`mut`/`fn`）让**脚本接管**这个名字：可以从
+                    //   内建名手里夺过来（`mut sum = 0` 是常见写法，AI 规格里就有），
+                    //   并重置此前的不可变标记。
+                    // - 赋值才受保护：不得改写内建/宿主注入的名字（`json = 1`），
+                    //   也不得改写此前用 `let` 声明过的全局（跨轮求值的 REPL 场景）。
+                    match kind {
+                        GlobalWrite::Assign => {
+                            if self.immutable_host.contains(&name) {
+                                return Err(VmError::TypeError(format!(
+                                    "Cannot assign to '{name}': it is a built-in or host-injected \
+                                     global (declare it with `mut` to shadow it; the host can \
+                                     replace it via set_global)"
+                                )));
+                            }
+                            if self.immutable_declared.contains(&name) {
+                                return Err(VmError::TypeError(format!(
+                                    "Cannot assign to immutable variable '{name}' \
+                                     (declared with `let` in an earlier evaluation; use `mut`)"
+                                )));
+                            }
+                        }
+                        GlobalWrite::DeclareMut => {
+                            self.immutable_host.remove(&name);
+                            self.immutable_declared.remove(&name);
+                        }
+                        GlobalWrite::DeclareImmutable => {
+                            self.immutable_host.remove(&name);
+                            self.immutable_declared.insert(name.clone());
+                        }
+                    }
                     self.globals.insert(name, val);
                 }
 
