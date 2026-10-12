@@ -24,6 +24,32 @@ fn normalize(text: &str) -> String {
     text.replace("\r\n", "\n").trim_end().to_string()
 }
 
+/// 去掉**公共前缀缩进**：Markdown 列表里的代码块会整体缩进。
+///
+/// 源码与期望输出都被同样处理，相对缩进不受影响；不处理的话，缩进会变成
+/// "期望输出里多出来的空格"，让本来正确的示例误报失败。
+fn dedent(text: &str) -> String {
+    let indent = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    if indent == 0 {
+        return text.to_string();
+    }
+    text.lines()
+        .map(|line| {
+            if line.len() >= indent {
+                &line[indent..]
+            } else {
+                line.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn run_cli(source: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_ada_cli"))
         .arg("-e")
@@ -108,7 +134,8 @@ fn every_runnable_guide_snippet_matches_its_declared_result() {
     );
 
     for snippet in snippets {
-        let output = run_cli(&snippet.source);
+        let source = dedent(&snippet.source);
+        let output = run_cli(&source);
         let stdout = normalize(&String::from_utf8_lossy(&output.stdout));
         let stderr = normalize(&String::from_utf8_lossy(&output.stderr));
         match &snippet.expect {
@@ -117,31 +144,31 @@ fn every_runnable_guide_snippet_matches_its_declared_result() {
                     output.status.success(),
                     "AI_GUIDE.md:{}: snippet failed but declares output\n--- source ---\n{}\n--- stderr ---\n{}",
                     snippet.line,
-                    snippet.source,
+                    source,
                     stderr
                 );
                 assert_eq!(
                     stdout,
-                    normalize(expected),
+                    normalize(&dedent(expected)),
                     "AI_GUIDE.md:{}: output mismatch\n--- source ---\n{}",
                     snippet.line,
-                    snippet.source
+                    source
                 );
             }
             Expect::Error(needle) => {
-                let needle = normalize(needle);
+                let needle = normalize(&dedent(needle));
                 assert!(
                     !output.status.success(),
                     "AI_GUIDE.md:{}: snippet succeeded but declares an error\n--- source ---\n{}\n--- stdout ---\n{}",
                     snippet.line,
-                    snippet.source,
+                    source,
                     stdout
                 );
                 assert!(
                     stderr.contains(&needle),
                     "AI_GUIDE.md:{}: error message does not contain {needle:?}\n--- source ---\n{}\n--- stderr ---\n{}",
                     snippet.line,
-                    snippet.source,
+                    source,
                     stderr
                 );
             }

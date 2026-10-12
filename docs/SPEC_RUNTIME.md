@@ -477,29 +477,32 @@ fn main() -> Result<(), ada_engine::Error> {
 
 ## 10. 沙箱与权限模型
 
-### 10.1 现状 ✅（M5 已落地，见 §7.1 与 [SPEC_ASYNC](SPEC_ASYNC.md)）
+### 10.1 现状 ✅（M5 落地；T7.5 追加 `fs`/`crypto`）
 
 | 面 | 实现 | 强制点 |
 | :--- | :--- | :--- |
-| 模块可见性 | `Engine::new()` 默认 **strict**：只注册 `json`/`math` 与语言内置；`time`/`sys`/`env`/`sleep_ms` **不注册** | `builtins::register_all(globals, &sandbox)` |
-| 越权错误 | `VmError::CapabilityDenied { name, profile }` | `Instruction::GetGlobal` 的拒绝名单 |
+| 模块可见性 | `Engine::new()` 默认 **strict**：只注册 `json`/`math`/`crypto` 与语言内置；`time`/`sys`/`env`/`sleep_ms`/**`fs`** **不注册** | `builtins::register_all(globals, &sandbox)` |
+| 越权错误 | `VmError::CapabilityDenied { name, profile }` | `Instruction::GetGlobal` 的拒绝名单（`time`/`env`/`sys`/`sleep_ms`/`fs`） |
 | `env` 读取 | 只读宿主显式声明的键；未授权键返回 `nil`/`false` 且**不触碰** `std::env` | 白名单在模块创建时捕获进闭包 |
+| 文件系统（T7.5） | **默认无 `fs`**；只有 `Sandbox::with_fs_root(dir)`（CLI：`--fs-root DIR`）才注册，且所有路径被规范化到根目录内（`..`、绝对路径、符号链接、前缀混淆均拒绝），单次 I/O 有字节上限 | `builtins::fs::resolve_within` + 模块注册开关 |
+| 网络 | 未提供任何 API（`http` 明确不做，见决策 D9） | — |
 | 内存 | `MemoryBudget`（近似、共享原子计数器）+ 大对象分配前预检查 | VM 指令 + 原生原型 + 迭代器物化 |
 | 时间/挂起 | 墙钟预算在指令循环与调度等待处检查；睡眠裁剪到剩余预算 | `Vm::check_wall_clock` |
-| 崩溃 | 脚本输入不再触发宿主 panic（M1 清零），敌意输入返回 `Err` | 11 条敌意用例回归 |
-| 文件/网络 | 未提供任何 API（无越权面） | — |
+| 崩溃 | 脚本输入不再触发宿主 panic（M1 清零），敌意输入返回 `Err`；宿主回调 panic 由 `catch_unwind` 兜底（T1.7） | 11 条敌意用例 + `host_panic.rs` |
 
 ### 10.2 三档 profile 与用途 ✅
 
 | Profile | 允许 | 用途 |
 | :--- | :--- | :--- |
-| `strict()`（`Engine::new()` 默认） | 纯计算 + `json` + `math` + 字符串/集合原型 + 任务 | AI 生成代码的默认执行环境 |
+| `strict()`（`Engine::new()` 默认） | 纯计算 + `json` + `math` + `crypto` + 字符串/集合原型 + 任务 | AI 生成代码的默认执行环境 |
 | `standard()` | strict + `time` + `sys` + `env`（键白名单）+ `sleep_ms` | 需要时间/配置的宿主、CLI 默认档 |
-| `permissive()` | 全部（等效 M5 之前） | 受信场景、兼容性开关、测试 |
-| 自定义 builder | 逐项开关 + 限额 | 业务按需授权 |
+| `permissive()` | 全部（等效 M5 之前；**仍不含 `fs`**） | 受信场景、兼容性开关、测试 |
+| 自定义 builder | 逐项开关 + 限额（`with_fs_root` 是唯一开启 `fs` 的途径） | 业务按需授权 |
 
-配套：`max_memory_bytes`（T5.3）、`max_wall_clock_ms`（T5.4）、`max_tasks`、`NativeModule`/`register_module`（T5.5）、
-安全测试集 `crates/ada_engine/tests/security.rs`（T5.6，21 用例）。
+配套：`max_memory_bytes`（T5.3）、`max_wall_clock_ms`（T5.4）、`max_tasks`、`with_fs_root`（T7.5）、
+`NativeModule`/`register_module`（T5.5）、
+安全测试集 `crates/ada_engine/tests/security.rs`（T5.6，21 用例）与
+`crates/ada_engine/tests/fs_sandbox.rs`（T7.5，10 用例）。
 
 ### 10.3 权限设计原则
 
@@ -508,6 +511,8 @@ fn main() -> Result<(), ada_engine::Error> {
 3. **不触碰即不泄漏**：`env` 未授权键在读取前就被拦截，避免"读了再判断"的侧信道与日志泄漏。
 4. **限额是上界**：内存/墙钟是近似约束，保证的是"无法在不被拒绝的前提下耗尽宿主"，而不是精确计量。
 5. **宿主注入优先**：`register_fn`/`register_module` 表示宿主显式授权，不受 profile 限制，但不得覆盖已有全局。
+6. **越权要报错，不要静默**：`fs` 的越界路径返回错误而不是 `nil`/`false`，否则攻击会伪装成"什么都没发生"；
+   能力被关闭时同样是显式错误（`CapabilityDenied`）。
 
 ---
 

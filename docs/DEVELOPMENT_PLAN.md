@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **248**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `closures.rs` 15 + `semantics.rs` 22 + `security.rs` 21 + `diagnostics.rs` 12 + `doc_examples.rs` 16 + `host_panic.rs` 5 + `value_layout.rs` 5 + `persistent_eval.rs` 8 + `cli_errors.rs` 9 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 51；文档测试 2） |
+| 测试总数 | 34 | **272**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `closures.rs` 15 + `semantics.rs` 22 + `security.rs` 21 + `diagnostics.rs` 12 + `doc_examples.rs` 16 + `fs_sandbox.rs` 10 + `persistent_eval.rs` 8 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `cli_errors.rs` 9 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -275,7 +275,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M7 · 生态与工具链 🚧（T7.1 ✅ / T7.2 ✅ / T7.3 ✅ / T7.4 ✅ / T7.5 📋 延后）
+### M7 · 生态与工具链 ✅（T7.1 ✅ / T7.2 ✅ / T7.3 ✅ / T7.4 ✅ / T7.5 ✅）
 
 | ID | 任务 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -283,11 +283,20 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | ✅ T7.2 | LSP 最小实现：诊断（语法/编译错误行列） | P3 | `crates/ada_lsp/`（新 crate：`lib.rs` 协议逻辑 + `main.rs` 入口）、`editors/vscode/{extension.js,lsp-client.js}`、`docs/EDITORS.md` | 完成证据：`ada-lsp` 实现 LSP 最小子集（`initialize` 声明全量同步 / `didOpen` / `didChange` / `didClose` / `shutdown` / `exit` / 未知请求回 `-32601`），诊断以 0 基 `range` 推送且与 CLI 同源（`Engine::check`）。**只做静态诊断、不执行脚本**（编辑器安全，见 EDITORS.md §2.1）。测试：`lib.rs` 单元 15（含畸形输入不 panic）、`tests/session.rs` 4（**真实进程 + 真实分帧**：initialize→didOpen(语法错)→didChange(编译错)→didChange(修好→空)→shutdown/exit；含"未 shutdown 即 exit 非零退出"与"stdin 关闭不崩溃"）、`tests/node_client.rs` 1（**随扩展发布的 JS 客户端核心** `lsp-client.js` 驱动真实二进制做互通验证，需 node）。另新增 `ada check` 子命令与 `Engine::check` 静态检查入口 |
 | ✅ T7.3 | 文档站：mdBook 从 `docs/` 单源构建 | P2 | `docs/book.toml`、`docs/SUMMARY.md`、`crates/ada_cli/tests/docs_site.rs`、CI | 完成证据：`mdbook build docs` 真实构建成功（产物在 `target/mdbook`，不污染源目录）；门禁保证"每个 `docs/*.md` 必须登记在 SUMMARY"且"SUMMARY 每项必须存在"，并校验每个条目都产出了对应 HTML；CI 新增 `docs-site` job（安装 mdbook 0.4.40 后强制构建） |
 | ✅ T7.4 | AI Prompt 模板与语法规格单页（供 LLM 生成代码） | P2 | `docs/AI_GUIDE.md`、`examples/ai/*.ada` + `*.expected.txt`、`crates/ada_cli/tests/ai_guide.rs` | 完成证据：单页规格含 15 个 `ada run` 代码块 + 期望输出/错误块，全部由**真实 CLI**执行比对；3 个完整示例（数据管道/并发/校验）与 golden 输出逐行比对；反直觉规则与坑位清单由 `guide_covers_the_documented_pitfalls` 固定 |
-| 📋 T7.5 | 可选扩展模块：`fs` / `http` / `crypto`（受 `SandboxProfile` 管控） | P3 | `crates/ada_vm/src/builtins/` | **仍延后**：每个模块都是新的能力面（路径逃逸防护、网络超时、哈希依赖），需要与 M5 权限模型一并设计并配套敌意输入测试；沙箱侧开关（`allows_global`/`denied_globals`）与 `env` 白名单已就绪，可作为实现模板 |
+| ✅ T7.5 | 可选扩展模块：`fs` / `crypto`（受沙箱管控）；`http` **明确不做** | P3 | `crates/ada_vm/src/builtins/{fs,crypto}.rs`、`sandbox.rs`、`crates/ada_cli/src/main.rs`、`crates/ada_engine/tests/{fs_sandbox,builtins_crypto}.rs` | 完成证据：**`crypto`**（`sha256`/`hmac_sha256`/`hex`）为纯计算模块、三档 profile 都可用，期望值由 Node.js 独立实现交叉验证（6 用例）；**`fs`**（`read_text`/`write_text`/`exists`/`is_dir`/`list`/`remove`/`root`）默认**不注册**，只有 `Sandbox::with_fs_root(dir)`（CLI `--fs-root DIR`）才暴露，且路径被规范化限制在根目录内——`..`、绝对路径、符号链接、前缀混淆（`/root` vs `/root-evil`）全部拒绝并**报错而非静默**，单次 I/O 有字节上限、列举有条目上限、不隐式建目录（10 个敌意/边界用例 + 6 个路径解析单元测试）。实现使用 `sha2`/`hmac`，不自造密码学原语 |
+
+**T7.5 的范围决定**：`http` 在 0.1.0 **不做**（记为决策 D9）——它需要 TLS 依赖、重定向/超时策略、
+端口与主机白名单（否则 SSRF 面很大）以及一套独立的网络限额语义，属于自成一体的一轮工作量；
+在没有这些之前，"不提供网络 API"本身就是最安全的默认。
+
+| ID | 决策 | 选项 | 结论与理由 | 状态 |
+| :--- | :--- | :--- | :--- | :--- |
+| D9 | 网络能力（`http`） | A 提供受限 HTTP 客户端；B 不提供 | **B（不提供）**：TLS 需要引入重量级依赖；即使有 TLS，仍需主机/端口白名单、重定向限制、超时与响应体上限，否则 SSRF/资源耗尽面远大于收益。0.1.0 的定位是"宿主注入能力的嵌入式脚本"——需要网络时由宿主 `register_fn` 显式提供，责任边界更清晰 | ✅ 已决（T7.5） |
 
 **M7 附加修复（由新门禁暴露，已落地）**：
 - **D4 一致性问题**：`match` 分支体此前无条件把 `{` 当块，导致 `=> { k: v }` 无法解析，与决策 D4（`{}` 是 map）矛盾。现在分支体与表达式共用同一消歧函数 `parse_brace_expr`（回归测试见 `semantics.rs::match_arm_bodies_follow_the_same_brace_rule`，规范见 SPEC_LANGUAGE §5.6）。
 - **T0.6 CLI 错误格式**：由 `Error: {Debug}` 改为单行 `[file:]line:col: error: <消息>`；新增 `ParseError::position()`/`LexError::position()` 公开 API 与 `cli_errors.rs` 契约测试。
+- **map 成员派发规则统一（T7.5）**：此前"适配器名让键优先、原型方法名遮蔽键"两套规则并存，导致 `m.remove` 与 `m["remove"]` 不一致（并让 `fs.remove` 被静默替换成方法）。现统一为**自有键优先**，关闭缺口 G-S13（规范见 SPEC_STDLIB §4.4）。
 - **文档门禁增强**：原先只能校验 Markdown 目标，链接到非 md 文件会误报"file missing"；现在对所有相对链接做存在性检查、只对 Markdown 目标做锚点检查。
 
 ---
@@ -318,7 +327,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 248 passed / 0 failed（单元 51 + 集成/门禁 195 + 文档测试 2）。
+**当前状态**：`cargo test --workspace` → 272 passed / 0 failed（单元 59 + 集成/门禁 211 + 文档测试 2）。
 
 ---
 
@@ -416,7 +425,7 @@ docs/
 | M4 异步并发 | 2–3 周 | 🚧 | ☑（T4.1/2/3/5/6 完成；T4.4 按 D2 转非目标） |
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
 | M6 性能与 JIT | 3–6 周 | ✅ | ☑（T6.1/T6.2/T6.3/T6.5 完成，≈−29% 平均；T6.4 JIT 延后并记录理由） |
-| M7 生态工具链 | 长期 | 🚧 | ☑（T7.1/T7.2/T7.3/T7.4 完成；T7.5 延后并记录理由） |
+| M7 生态工具链 | 长期 | ✅ | ☑（T7.1–T7.5 全部完成；`http` 按 D9 明确不做） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。
 

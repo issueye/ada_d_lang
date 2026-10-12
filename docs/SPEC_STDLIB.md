@@ -121,14 +121,52 @@
 | `time.now_secs()` | Unix 秒时间戳（Int） |
 | `time.elapsed_ms(start_ms)` | 距 `start_ms` 的毫秒差；时钟回拨时返回 0 |
 
-### 3.4 `sys` / `env` ⚠️
+### 3.4 `sys` / `env` ✅（M5：`env` 受键白名单管控）
 
 | API | 状态 | 说明 |
 | :--- | :--- | :--- |
 | `sys.version` | ✅ | crate 版本字符串 |
 | `sys.os` / `sys.arch` | ✅ | `std::env::consts::{OS, ARCH}` |
-| `env.get(key, [default])` | ⚠️ | 读宿主环境变量；**当前无白名单**（T5.2）；未设置时返回 `default` 或 `nil` |
-| `env.has(key)` | ⚠️ | 同上，无白名单 |
+| `env.get(key, [default])` | ✅ | 只读**白名单内**的键；未授权或未设置时返回 `default` 或 `nil`（未授权时**不读**宿主环境，T5.2） |
+| `env.has(key)` | ✅ | 同上，仅白名单内键返回 `true` |
+| `env.allowed()` | ✅ | 返回当前白名单（便于自省与测试） |
+
+### 3.5 `crypto` ✅（T7.5：纯计算，三档 profile 都可用）
+
+| API | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `crypto.sha256(text)` | ✅ | SHA-256，返回 64 位小写十六进制（按 **UTF-8 字节**哈希） |
+| `crypto.hmac_sha256(key, text)` | ✅ | HMAC-SHA256（键与消息都按 UTF-8 字节），返回十六进制 |
+| `crypto.hex(text)` | ✅ | 把字符串的 UTF-8 字节编码成十六进制 |
+
+- 正确性由**独立实现交叉验证**：期望值来自 Node.js `crypto`（见 `crates/ada_engine/tests/builtins_crypto.rs`）。
+- 不涉及宿主能力（不读环境/不落盘/不联网），因此与 `json`/`math` 同级：**无需宿主授权**。
+- 实现使用 `sha2`/`hmac` crate，不自造密码学原语。
+
+### 3.6 `fs` ✅（T7.5：**受限根目录**，默认不暴露）
+
+| API | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `fs.root` | ✅ | 规范化后的根目录（便于自省/测试） |
+| `fs.read_text(path)` | ✅ | 读 UTF-8 文本；文件不存在 → `nil`；目录/超大/非 UTF-8 → 报错 |
+| `fs.write_text(path, text)` | ✅ | 写文本（**不隐式建目录**），成功返回 `true` |
+| `fs.exists(path)` / `fs.is_dir(path)` | ✅ | 存在性/类型判断 |
+| `fs.list(path)` | ✅ | 目录项名称数组，**按名称排序**（保证脚本输出确定） |
+| `fs.remove(path)` | ✅ | 仅删除文件：存在 → `true`，不存在 → `false`，目录 → 报错 |
+
+**只有宿主显式给出根目录时模块才存在**（`Sandbox::with_fs_root(dir)`；CLI 为 `ada --fs-root DIR …`）。
+默认三档 profile 都不暴露 `fs`，脚本访问会得到 `CapabilityDenied { name: "fs" }`。
+
+安全约束（实现见 `crates/ada_vm/src/builtins/fs.rs`，敌意输入测试见
+`crates/ada_engine/tests/fs_sandbox.rs`）：
+
+1. 空路径、含 NUL 的路径、任何含 `..` 的路径直接拒绝。
+2. 目标路径（写文件时取其**父目录**）经 `canonicalize` 解析后，必须仍位于规范化后的根目录之下——
+   因此符号链接无法逃逸。
+3. 前缀按**路径组件**比较，`/root` 与 `/root-evil` 不会被混淆。
+4. 单次读写受字节上限约束（取 1 MiB 与内存预算的较小者），目录列举条目数有上限。
+5. 越界路径**报错**而不是静默返回 `nil`/`false`（静默失败会把攻击伪装成"没事"）。
+6. 根目录不可用时，模块仍注册但每次调用都报 `fs root '…' is not an accessible directory`。
 
 ---
 
@@ -187,15 +225,25 @@
 | `.iter()` | ✅ | 返回显式迭代器（T2.3） |
 | `.map(f)` / `.filter(f)` / `.take(n)` / `.skip(n)` / `.count()` / `.collect()` / `.find(f)` / `.any(f)` / `.all(f)` | ✅ | 迭代器适配器（T2.1）；map 按 `[key, value]` 二元数组迭代 |
 
-### 4.4 成员派发优先级 ⚠️
+### 4.4 成员派发优先级 ✅（T7.5 统一，关闭原缺口 G-S12）
 
 字段访问（`x.field`）的解析顺序：
 
-1. **Map 上的适配器同名键**（T2.1 新增名字）优先——这些名字在 0.1.0 之前未定义，属纯新增，不构成回归：`{ map: 7 }.map` → `7`。
-2. **原型方法名**：`len` / `keys` / `values` / `entries` / `contains_key` / `remove` / `merge` / `push` / `pop` / `sort` / `trim` / `split` / `slice` … —— 因此 `{ len: 9 }.len` 仍返回**键值对数量** `1`，不是 `9`，这是一处已知的命名歧义（缺口 G-S12，任务 T3.5 决定是否改为"键优先"）。
-3. **适配器方法名**（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`/`enumerate`/`rev`/`join`/`sum`）。
-4. **Map 的普通键**。
-5. 其余情况返回 `nil`；对 `nil` 目标做非可选访问则报 `TypeError`。对不可迭代的目标调用适配器名字（如 `true.filter`）会得到 `nil`，随后调用报 `NotCallable`（T3.7 将补测试固化该口径）。
+1. **自有键优先**：map 上的同名键一律优先，**无论该名字是否与原型方法/适配器方法重名**——
+   `{ len: 9 }.len` → `9`（不是"键的数量"），`{ remove: 3 }.remove` → `3`。
+   - 与索引访问语义一致：`m.key` 等价于 `m["key"]`（此前二者在重名时会给出不同结果）。
+   - **必要性**：宿主模块（`json`/`math`/`fs`/自定义 `NativeModule`）在脚本侧就是普通 map，
+     若方法名能遮蔽键，模块里与原型同名的函数会被静默替换。T7.5 正是撞上这个真实缺陷
+     （`fs.remove` 拿到的是 map 原型方法而不是模块函数）才做的这个决定。
+   - 若确实需要方法而键恰好重名：给键换个名字。
+2. **原型方法名**：`len` / `keys` / `values` / `entries` / `contains_key` / `remove` / `merge` /
+   `push` / `pop` / `sort` / `trim` / `split` / `slice` … —— **仅在该键不存在时**命中。
+3. **适配器方法名**（`map`/`filter`/`take`/`skip`/`collect`/`count`/`find`/`any`/`all`/`enumerate`/`rev`/`join`/`sum`）：仅对可迭代目标生效，且同样让位于自有键。
+4. 其余情况返回 `nil`；对 `nil` 目标做非可选访问则报 `TypeError`。对不可迭代的目标调用适配器名字（如 `true.filter`）会得到 `nil`，随后调用报 `NotCallable`。
+
+> **变更记录**：0.1.0 早期版本中，原型方法名（`len`/`keys`/…）会**遮蔽**同名键
+> （`{ len: 9 }.len` → `1`），而适配器名则让键优先——两套规则并存，且与 `m["len"]` 不一致。
+> 现统一为"键优先"，回归测试见 `crates/ada_vm/tests/adapters.rs::own_map_keys_win_over_method_names`。
 
 ---
 
@@ -333,12 +381,12 @@ engine.register_module(MyToolModule::new());
 | G-S2 | `string.len` 与 `len()` 返回字节数 | ✅ 已修复（T2.5）：二者均为字符数，字节数走 `.len_bytes` | ✅ T2.5 |
 | G-S3 | `iterator` 无任何方法，无法链式消费 | ✅ 已修复（T2.3）：适配器 + `.iter()`/`.next()` 可用 | ✅ T2.3 |
 | G-S4 | `sleep_ms` 阻塞线程；`await_race` 语义非"首个就绪" | ✅ 已修复（T4.3/T4.5）：`sleep_ms` 挂起而非阻塞；`await_any`/`await_race` 返回最先结算者，新增 `timeout`/`cancel` | ✅ M4 |
-| G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ⚠️ | T5.1 / T5.2 |
+| G-S5 | `env` 无白名单，`time`/`sys` 无权限分级 | ✅ 已修复（M5）：`Sandbox` 三档 + builder，`env` 键白名单（未授权不读宿主环境） | ✅ T5.1 / T5.2 |
 | G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ 口径统一 | T3.5 |
 | G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |
 | G-S8 | map 迭代/`keys()`/`entries()` 顺序不保证（`HashMap`） | ⚠️ | 规范明示；如需稳定顺序见 D6 |
 | G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ✅ 已修复（T3.6）：`1.0` → `"1.0"`，`1e300` → `"1e300"` | ✅ T3.6 |
 | G-S10 | 缺失 `is_iterator` | ✅ 已修复（T2.1）：已注册 `is_iterator` | ✅ T2.1 |
-| G-S11 | `NativeModule` 与模块注册接口不存在 | 📋 | T5.5 |
+| G-S11 | `NativeModule` 与模块注册接口不存在 | ✅ 已修复（M5）：`NativeModule` trait + `Engine::register_module`（冲突报 `ModuleConflict`） | ✅ T5.5 |
 | G-S12 | 适配器结果为即时求值（非惰性），大区间会先物化 | ⚠️ 已按决策 D3 = A 记录 | 后续评估惰性链 |
-| G-S13 | map 上 `len`/`keys` 等原型方法名遮蔽同名键（`{len: 9}.len` → `1`） | ⚠️ | T3.5（是否改为键优先） |
+| G-S13 | map 上 `len`/`keys` 等原型方法名遮蔽同名键（`{len: 9}.len` → `1`） | ✅ 已修复（T7.5）：统一为**自有键优先**，与 `m["len"]` 一致；`fs.remove` 被遮蔽的真实缺陷促成了该决定（见 §4.4） | ✅ T7.5 |

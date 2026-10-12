@@ -7,6 +7,18 @@
 
 ### Added
 
+- **`crypto` 模块（M7 / T7.5）**：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、
+  `crypto.hex(text)`。纯计算、不碰宿主能力，因此三档 profile 都可用（与 `json`/`math` 同级）；
+  正确性由 Node.js `crypto` 独立实现交叉验证（UTF-8 字节语义、多字节键/消息）。
+- **`fs` 模块（M7 / T7.5，受限根目录）**：`read_text` / `write_text` / `exists` / `is_dir` /
+  `list`（按名称排序）/ `remove` / `root`。默认**不注册**；只有
+  `Sandbox::with_fs_root(dir)`（CLI：`ada --fs-root DIR …`）才暴露，且所有路径被规范化限制在
+  根目录内——`..`、绝对路径、符号链接、前缀混淆（`/root` vs `/root-evil`）全部拒绝，
+  越界**报错而非静默返回 nil/false**；单次 I/O 与目录列举有上限，不隐式建目录。
+  10 个敌意/边界集成用例 + 6 个路径解析单元测试。
+- CLI 新增 `--fs-root DIR`（全局开关，配合 `ada`/`ada run`/`ada -e` 使用）。
+- 决策 **D9**：`http` 网络模块在 0.1.0 **明确不做**（TLS 依赖、SSRF 面、重定向/超时策略
+  自成一体；需要网络时由宿主 `register_fn` 显式注入）。
 - **最小 LSP 与编辑器诊断（M7 / T7.2）**：新 crate `ada_lsp` 提供二进制 `ada-lsp`
   （LSP 最小子集：`initialize` 声明全量同步、`didOpen`/`didChange`/`didClose`、
   `shutdown`/`exit`、未知请求回 `-32601`），诊断以 0 基 `range` 推送，与 CLI 同源。
@@ -145,6 +157,11 @@
 
 ### Changed
 
+- **map 成员派发规则统一为「自有键优先」（T7.5）**：此前"适配器名让键优先、原型方法名遮蔽键"
+  两套规则并存，导致 `m.remove` 与 `m["remove"]` 结果不一致，并让宿主模块里与原型同名的函数
+  被静默替换（`fs.remove` 拿到的其实是 map 原型方法）。现在 `{ len: 9 }.len` → `9`、
+  `{ remove: 3 }.remove` → `3`，与该键不存在时才命中方法名的规则一致。
+  **迁移**：若依赖旧行为，请给键改用别的名字；规范见 SPEC_STDLIB §4.4（缺口 G-S13 已关闭）。
 - **`Value` 从 48 字节降到 16 字节（T6.2e）**：`NativeFn` 与 `Intrinsic` 的载荷改放
   `Arc<NativeFunction>` / `Arc<IntrinsicCall>` 之后。寄存器文件（2048 槽）随之从 96 KiB
   降到 **32 KiB**，可以放进 L1。实测（criterion，对 M6 原始基线）：

@@ -204,8 +204,8 @@ println([1, 2, 3, 4].map(x => x * 10).filter(x => x > 20).collect())
 
 | 环境 | 默认允许 |
 | :--- | :--- |
-| CLI（`ada`，本地受信） | `time`、`sys`、`env`（**空白名单**）、`sleep_ms` |
-| Rust 宿主 `Engine::new()` | **只有纯计算 + `json` + `math`**（strict） |
+| CLI（`ada`，本地受信） | `time`、`sys`、`env`（**空白名单**）、`sleep_ms`、`crypto`；`fs` 需 `--fs-root DIR` |
+| Rust 宿主 `Engine::new()` | **只有纯计算 + `json` + `math` + `crypto`**（strict） |
 
 ```ada run
 println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
@@ -215,7 +215,19 @@ println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 1|true|12.0
 ```
 
-- 在 strict 下访问 `time`/`env`/`sys`/`sleep_ms` 会报 `CapabilityDenied`（而不是"未定义"）。
+- 在 strict 下访问 `time`/`env`/`sys`/`sleep_ms`/`fs` 会报 `CapabilityDenied`（而不是"未定义"）。
+- **哈希**（纯计算，任何环境都可用）：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、`crypto.hex(text)`。
+
+  ```ada run
+  println(crypto.sha256("abc"))
+  ```
+
+  ```output
+  ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+  ```
+- **文件读写**：只有宿主显式给出根目录才存在（`Sandbox::with_fs_root` / `ada --fs-root DIR`），
+  且路径被限制在该目录内（`..`、绝对路径、符号链接都逃不出去，越界会**报错**而不是返回 nil）。
+  可用 `fs.read_text` / `fs.write_text` / `fs.exists` / `fs.is_dir` / `fs.list` / `fs.remove` / `fs.root`。
 - 宿主还有内存/墙钟/任务数预算，超限报 `MemoryLimitExceeded` / `WallClockLimitExceeded` / `TaskLimitExceeded`。
 - 需要宿主能力时由宿主显式开档，脚本侧无法自行提权。
 
