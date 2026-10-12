@@ -6,7 +6,9 @@ pub mod vm;
 
 pub use sandbox::{ProfileKind, Sandbox};
 pub use task::{TaskCell, TaskState};
-pub use value::{AsyncKind, Closure, NativeCallback, Value};
+pub use value::{
+    AdapterKind, AsyncKind, Closure, IntrinsicCall, NativeCallback, NativeFunction, Value,
+};
 pub use vm::{Vm, VmError};
 
 #[cfg(test)]

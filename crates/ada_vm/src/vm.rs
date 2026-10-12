@@ -566,7 +566,7 @@ impl Vm {
                 self.registers.truncate(base);
                 result
             }
-            Value::NativeFn { callback, .. } => callback(args).map_err(VmError::NativeError),
+            Value::NativeFn(native) => (native.callback)(args).map_err(VmError::NativeError),
             Value::Async { kind, receiver } => {
                 let mut effective = Vec::with_capacity(args.len() + 1);
                 if let Some(receiver) = receiver {
@@ -575,18 +575,14 @@ impl Vm {
                 effective.extend(args.iter().cloned());
                 self.call_async_blocking(*kind, &effective)
             }
-            Value::Intrinsic {
-                kind,
-                receiver,
-                args: bound,
-            } => {
-                let mut effective = Vec::with_capacity(args.len() + bound.len() + 1);
-                if let Some(receiver) = receiver {
+            Value::Intrinsic(call) => {
+                let mut effective = Vec::with_capacity(args.len() + call.args.len() + 1);
+                if let Some(receiver) = &call.receiver {
                     effective.push((**receiver).clone());
                 }
-                effective.extend(bound.iter().cloned());
+                effective.extend(call.args.iter().cloned());
                 effective.extend(args.iter().cloned());
-                self.invoke_adapter(*kind, &effective)
+                self.invoke_adapter(call.kind, &effective)
             }
             other => Err(VmError::NotCallable(other.clone())),
         }
@@ -869,9 +865,9 @@ enum StepResult {
 fn task_label(callee: &Value) -> String {
     match callee {
         Value::Closure(closure) => closure.proto.name.clone(),
-        Value::NativeFn { name, .. } => name.clone(),
+        Value::NativeFn(native) => native.name.clone(),
         Value::Async { kind, .. } => kind.name().to_string(),
-        Value::Intrinsic { kind, .. } => kind.name().to_string(),
+        Value::Intrinsic(call) => call.kind.name().to_string(),
         other => format!(
             "<{}>",
             match other {
@@ -1958,14 +1954,14 @@ impl Vm {
                                 captures: closure.captures.clone(),
                             });
                         }
-                        Value::NativeFn { callback, .. } => {
+                        Value::NativeFn(native) => {
                             let start = base + arg_start.0 as usize;
                             let end = start + arg_count as usize;
                             let args = &self.registers[start..end];
-                            let res = callback(args).map_err(VmError::NativeError)?;
+                            let res = (native.callback)(args).map_err(VmError::NativeError)?;
                             self.registers[base + dst.0 as usize] = res;
                         }
-                        Value::Intrinsic { .. } => {
+                        Value::Intrinsic(_) => {
                             let start = base + arg_start.0 as usize;
                             let end = start + arg_count as usize;
                             let args = self.registers[start..end].to_vec();

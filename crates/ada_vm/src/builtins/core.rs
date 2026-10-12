@@ -51,8 +51,8 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
                 Value::Array(_) => "array",
                 Value::Map(_) => "map",
                 Value::Closure(_)
-                | Value::NativeFn { .. }
-                | Value::Intrinsic { .. }
+                | Value::NativeFn(_)
+                | Value::Intrinsic(_)
                 | Value::Async { .. } => "function",
                 Value::Task(_) => "task",
                 Value::Iterator(_) => "iterator",
@@ -117,7 +117,7 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
         Value::native_fn("is_fn", |args| {
             let is_fn = matches!(
                 args.first(),
-                Some(Value::Closure(_) | Value::NativeFn { .. } | Value::Intrinsic { .. })
+                Some(Value::Closure(_) | Value::NativeFn(_) | Value::Intrinsic(_))
             );
             Ok(Value::Bool(is_fn))
         }),

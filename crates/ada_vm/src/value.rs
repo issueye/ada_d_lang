@@ -122,17 +122,10 @@ pub enum Value {
     Array(Arc<RwLock<Vec<Value>>>),
     Map(Arc<RwLock<HashMap<String, Value>>>),
     Closure(Arc<Closure>),
-    NativeFn {
-        name: String,
-        callback: NativeCallback,
-    },
+    NativeFn(Arc<NativeFunction>),
     /// 迭代器适配器（T2.1）：全局形式 `map(xs, f)` 与绑定形式 `xs.map(f)` 共用。
     /// `receiver` 为方法形式的接收者，`args` 为已绑定的额外实参。
-    Intrinsic {
-        kind: AdapterKind,
-        receiver: Option<Box<Value>>,
-        args: Vec<Value>,
-    },
+    Intrinsic(Arc<IntrinsicCall>),
     /// 被闭包捕获的变量槽（T2.2）：内外共享同一个 `RwLock`，因此写入互相可见。
     /// 正常路径上不会泄漏到用户代码——只出现在局部寄存器与闭包捕获表里。
     Cell(Arc<RwLock<Value>>),
@@ -145,6 +138,25 @@ pub enum Value {
         receiver: Option<Arc<Value>>,
     },
     Iterator(Arc<RwLock<IteratorState>>),
+}
+
+/// 原生函数的载荷（T6.2b）。
+///
+/// 单独立即分配：`String`(24B) + `Arc<dyn Fn>`(16B) 若内联进 `Value`，会把枚举撑到
+/// 48 字节，寄存器文件（2048 槽）随之变成 96 KiB 而溢出 L1。放进 `Arc` 后 `Value`
+/// 保持 16 字节（见 `crates/ada_vm/tests/value_layout.rs`）。
+#[derive(Clone)]
+pub struct NativeFunction {
+    pub name: String,
+    pub callback: NativeCallback,
+}
+
+/// 迭代器适配器的载荷（T6.2b）：`Vec<Value>`(24B) 同样会撑大每个 `Value`。
+#[derive(Clone)]
+pub struct IntrinsicCall {
+    pub kind: AdapterKind,
+    pub receiver: Option<Box<Value>>,
+    pub args: Vec<Value>,
 }
 
 /// 需要 VM 配合（可能挂起）的内建操作（M4）。
@@ -244,10 +256,17 @@ impl Value {
         name: impl Into<String>,
         cb: impl Fn(&[Value]) -> Result<Value, String> + Send + Sync + 'static,
     ) -> Self {
-        Value::NativeFn {
+        Self::native_fn_shared(name, Arc::new(cb))
+    }
+
+    /// 用**已构造好的**回调创建原生函数（T6.2b）。
+    ///
+    /// 宿主模块表 / 引擎内部手里已经握着 `Arc<dyn Fn>`，这里直接复用而不是再包一层。
+    pub fn native_fn_shared(name: impl Into<String>, callback: NativeCallback) -> Self {
+        Value::NativeFn(Arc::new(NativeFunction {
             name: name.into(),
-            callback: Arc::new(cb),
-        }
+            callback,
+        }))
     }
 
     pub fn is_nil(&self) -> bool {
@@ -256,11 +275,11 @@ impl Value {
 
     /// 未绑定的适配器（全局函数形式）。
     pub fn intrinsic(kind: AdapterKind) -> Self {
-        Value::Intrinsic {
+        Value::Intrinsic(Arc::new(IntrinsicCall {
             kind,
             receiver: None,
             args: Vec::new(),
-        }
+        }))
     }
 
     /// 把值包成可共享的变量槽（T2.2）。
@@ -290,18 +309,18 @@ impl Value {
     /// 绑定接收者（方法形式 `xs.map`）。
     pub fn with_receiver(self, receiver: Value) -> Self {
         match self {
-            Value::Intrinsic { kind, args, .. } => Value::Intrinsic {
-                kind,
-                receiver: Some(Box::new(receiver)),
-                args,
-            },
+            Value::Intrinsic(mut call) => {
+                // 唯一持有时原地改，避免复制 args
+                Arc::make_mut(&mut call).receiver = Some(Box::new(receiver));
+                Value::Intrinsic(call)
+            }
             other => other,
         }
     }
 
     pub fn adapter_kind(&self) -> Option<AdapterKind> {
         match self {
-            Value::Intrinsic { kind, .. } => Some(*kind),
+            Value::Intrinsic(call) => Some(call.kind),
             _ => None,
         }
     }
@@ -363,13 +382,11 @@ impl Value {
                 serde_json::Value::Object(obj)
             }
             Value::Closure(c) => serde_json::Value::String(format!("<fn {}>", c.proto.name)),
-            Value::NativeFn { name, .. } => {
-                serde_json::Value::String(format!("<native fn {name}>"))
-            }
+            Value::NativeFn(f) => serde_json::Value::String(format!("<native fn {}>", f.name)),
             Value::Task(t) => serde_json::Value::String(format!("<task {}>", t.state().name())),
             Value::Iterator(_) => serde_json::Value::String("<iterator>".into()),
-            Value::Intrinsic { kind, .. } => {
-                serde_json::Value::String(format!("<adapter {}>", kind.name()))
+            Value::Intrinsic(call) => {
+                serde_json::Value::String(format!("<adapter {}>", call.kind.name()))
             }
             Value::Async { kind, .. } => {
                 serde_json::Value::String(format!("<async {}>", kind.name()))
@@ -419,10 +436,10 @@ impl PartialEq for Value {
             (Value::Array(a), Value::Array(b)) => Arc::ptr_eq(a, b),
             (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
             (Value::Closure(a), Value::Closure(b)) => a == b,
-            (Value::NativeFn { name: a, .. }, Value::NativeFn { name: b, .. }) => a == b,
+            (Value::NativeFn(a), Value::NativeFn(b)) => a.name == b.name,
             (Value::Task(a), Value::Task(b)) => Arc::ptr_eq(a, b),
             (Value::Iterator(a), Value::Iterator(b)) => Arc::ptr_eq(a, b),
-            (Value::Intrinsic { kind: a, .. }, Value::Intrinsic { kind: b, .. }) => a == b,
+            (Value::Intrinsic(a), Value::Intrinsic(b)) => a.kind == b.kind,
             (Value::Async { kind: a, .. }, Value::Async { kind: b, .. }) => a == b,
             (Value::Cell(a), Value::Cell(b)) => {
                 Arc::ptr_eq(a, b) || *a.read().unwrap() == *b.read().unwrap()
@@ -449,10 +466,10 @@ impl fmt::Debug for Value {
                 write!(f, "{map:?}")
             }
             Value::Closure(c) => write!(f, "{c:?}"),
-            Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
+            Value::NativeFn(native) => write!(f, "<native fn {}>", native.name),
             Value::Task(t) => write!(f, "<task #{} {} {}>", t.id, t.label, t.state().name()),
             Value::Iterator(it) => write!(f, "Iterator({:?})", it.read().unwrap()),
-            Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Intrinsic(call) => write!(f, "<adapter {}>", call.kind.name()),
             Value::Async { kind, .. } => write!(f, "<async {}>", kind.name()),
             Value::Cell(cell) => write!(f, "<cell {:?}>", cell.read().unwrap()),
         }
@@ -502,10 +519,10 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Closure(c) => write!(f, "<fn {}>", c.proto.name),
-            Value::NativeFn { name, .. } => write!(f, "<native fn {name}>"),
+            Value::NativeFn(native) => write!(f, "<native fn {}>", native.name),
             Value::Task(t) => write!(f, "<task #{} {}>", t.id, t.state().name()),
             Value::Iterator(_) => write!(f, "<iterator>"),
-            Value::Intrinsic { kind, .. } => write!(f, "<adapter {}>", kind.name()),
+            Value::Intrinsic(call) => write!(f, "<adapter {}>", call.kind.name()),
             Value::Async { kind, .. } => write!(f, "<async {}>", kind.name()),
             Value::Cell(cell) => write!(f, "{}", cell.read().unwrap()),
         }

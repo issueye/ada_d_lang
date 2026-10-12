@@ -214,13 +214,7 @@ impl Engine {
         let mut map = HashMap::new();
         for (fname, callback) in module.functions() {
             let qualified = format!("{name}.{fname}");
-            map.insert(
-                fname,
-                Value::NativeFn {
-                    name: qualified,
-                    callback,
-                },
-            );
+            map.insert(fname, Value::native_fn_shared(qualified, callback));
         }
         self.vm.set_global(name, Value::map(map));
         Ok(())
