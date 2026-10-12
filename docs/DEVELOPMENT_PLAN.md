@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **290**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `semantics.rs` 26 + `interpolation_positions.rs` 6 + `security.rs` 21 + `doc_examples.rs` 16 + `diagnostics.rs` 12 + `fs_sandbox.rs` 10 + `cli_errors.rs` 9 + `persistent_eval.rs` 8 + `numeric_semantics.rs` 7 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `doc_task_status.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
+| 测试总数 | 34 | **293**（集成/门禁：`robustness.rs` 17 + `adapters.rs` 16 + `async.rs` 26 + `semantics.rs` 27 + `interpolation_positions.rs` 6 + `security.rs` 21 + `doc_examples.rs` 16 + `diagnostics.rs` 12 + `fs_sandbox.rs` 10 + `cli_errors.rs` 9 + `persistent_eval.rs` 10 + `numeric_semantics.rs` 7 + `builtins_crypto.rs` 6 + `host_panic.rs` 5 + `value_layout.rs` 5 + `ai_guide.rs` 4 + `editor_grammar.rs` 4 + `session.rs` 4 + `docs_site.rs` 3 + `golden_showcase.rs` 3 + `doc_links.rs` 2 + `doc_task_status.rs` 2 + `perf_budget.rs` 2 + `node_client.rs` 1；单元测试 59；文档测试 2） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -327,7 +327,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 290 passed / 0 failed（单元 59 + 集成/门禁 229 + 文档测试 2）。
+**当前状态**：`cargo test --workspace` → 293 passed / 0 failed（单元 59 + 集成/门禁 232 + 文档测试 2）。
 
 ---
 
@@ -456,7 +456,9 @@ M0–M7 完成后，仍**真实存在**的缺口集中在这里（其余历史�
 | :--- | :--- | :--- | :--- | :--- |
 | ✅ T8.1 | 插值字符串内的错误定位与消息（缺口 G-L6） | P3 | `ada_parser` | 完成证据：**实测发现位置本来就是对的**（T3.4 的 `from_fragment` + 偏移：单行 1:9、第二个片段 1:11、第 3 行 3:18、跨行 2:1、片段内词法错误 1:4），因此把任务改为修正**消息上下文**——片段独立解析导致用户在 `}` 处看到 `<EOF>`，现在补上"(inside this `${…}` interpolation, which ends at the next `}`)"，且不覆盖原期望记号（`$"{(1}"` 仍报 `expected )`）。位置与消息由 `crates/ada_parser/tests/interpolation_positions.rs` 6 个用例固定 |
 | ✅ T8.2 | 函数内游离 `break` / `continue` 应报编译错误（缺口 G-L13） | P2 | `ada_bytecode` | 完成证据：新增 `CompileError::LoopKeywordOutsideLoop`（带 `Span`，CLI 输出 `file:line:col`）；循环外、函数内、`if` 体内、以及**闭包体内**（闭包是独立函数）的 `break`/`continue` 都报错；循环内行为不变（while+break、for+continue、嵌套 break 只跳最内层）由 3 个用例固定。`codegen` 改动为把 `if let Some(ctx)` 变成 `let Some(ctx) else { return Err(...) }` |
-| 📋 T8.3 | REPL/跨轮次的全局镜像一致性（缺口 G-L17、G-L16） | P2 | `ada_engine`, `ada_bytecode` | 已确认并**有测试固定**：跨轮求值时上一轮顶层绑定已是全局变量，`let` 不可变性不生效（`persistent_eval.rs::immutability_is_enforced_within_a_program_but_not_across_evaluations`）；被闭包捕获的顶层变量其全局镜像也不跟随闭包内的写入。需要"REPL 持久作用域"或带可变性元数据的全局槽 |
+| ✅ T8.3 | 跨轮次全局的可变性与内建保护（缺口 G-L17） | P2 | `ada_bytecode`, `ada_vm` | 完成证据：`SetGlobal` 带上 `GlobalWrite::{Assign,DeclareMut,DeclareImmutable}` 三种语义——**声明**让脚本接管名字（`mut sum = 0` 仍可用），**赋值**受保护：跨轮改写 `let` 报运行时错误、改写内建/模块名（`json = 1`、`len = 1`）同样报错（此前是静默覆盖）。顶层 `fn` 名也改为不可变绑定（同程序内 `f = 2` 现在是编译错误，重定义仍可用）。`Instruction` 仍为 12 字节。测试：`persistent_eval.rs` 4 个用例（跨轮 let/mut、内建保护与接管、fn 不可变） |
+| ✅ T8.4 | **复合赋值对字段/索引/全局生效**（本轮发现并修复） | P1 | `ada_bytecode` | 完成证据：`cfg.n += 41` 曾得到 `41`、`a[0] += 41` 得到 `41`、计数器 `m.k += 1` 五次仍为 `1` —— 编译器在字段/索引/全局分支丢弃了复合运算符，直接写入 RHS（局部变量与闭包 upvalue 一直正确，所以测试与示例都没暴露）。现在三个分支都先读回当前值再应用运算；缺失字段做复合赋值报 `Cannot add nil and 1` 而不是静默成功。测试：`semantics.rs::compound_assignment_honours_the_operator_for_every_target_kind`（含全部 5 个复合运算符与字符串拼接） |
+| 📋 T8.5 | 被捕获顶层变量的全局镜像同步（缺口 G-L16） | P3 | `ada_engine`, `ada_bytecode` | 仍开放：捕获走 `Cell`，全局表存的是另一份值，因此闭包内写入不会反映到全局镜像。修复需要"全局槽即 Cell"或带元数据的全局槽设计（并保持宿主 `get_global` 看到普通值）。`persistent_eval.rs` 记录当前行为 |
 | 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | P3 | `crates/ada_jit/`（新） | 唯一未启动的**计划内**任务（M6 延后项）。验收线：`fib(30)` 较 VM 提速 ≥10×；基准与指令数门禁已就绪可直接对标 |
 
 > **不打算做的**（避免每次复核都重新讨论）：

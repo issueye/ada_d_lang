@@ -106,6 +106,19 @@
 
 ### Fixed
 
+- **复合赋值对字段/索引/全局此前被丢弃（T8.4）**：`cfg.n += 41` 得到 `41`、`a[0] += 41`
+  得到 `41`、计数器惯用法 `m.k += 1` 循环五次仍为 `1` —— 编译器在字段/索引/全局三个分支直接
+  写入右值，忽略了复合运算符（局部变量与闭包 upvalue 一直正确，所以示例与测试都没暴露）。
+  现在三分支都先读回当前值再应用运算；缺失字段做复合赋值报 `Cannot add nil and 1`
+  而不是静默成功。`semantics.rs` 增加覆盖全部 5 个复合运算符与字符串拼接的用例。
+- **跨轮求值不再能改写 `let`，脚本也不能覆盖内建名（T8.3，缺口 G-L17）**：
+  `SetGlobal` 现在区分 `Assign` / `DeclareMut` / `DeclareImmutable`。
+  - 跨轮改写 `let` 绑定 → 运行时错误（`declared with let in an earlier evaluation`）；
+    `mut` 声明仍可跨轮写入，重新 `mut` 声明可夺回可写性。
+  - 脚本**赋值**不得改写内建函数与模块（`json = 1`、`len = 1` 此前是静默覆盖）；
+    **声明**则可以接管（`mut sum = 0` 合法并从此归脚本所有）。
+  - 顶层 `fn` 名改为不可变绑定：同程序内 `f = 2` 现在是编译错误（重定义仍可用）。
+  `Instruction` 保持 12 字节，`persistent_eval.rs` 扩到 10 个用例覆盖以上行为。
 - **循环外的 `break` / `continue` 现在报编译错误（T8.2，缺口 G-L13）**：此前编译器静默忽略，
   `fn f() { break }` 直接返回 `nil`。新增 `CompileError::LoopKeywordOutsideLoop`（带 `Span`，
   CLI 输出 `file:line:col`）；`if` 体内、以及**闭包体内**（闭包是独立函数）的 `break` 同样报错。
