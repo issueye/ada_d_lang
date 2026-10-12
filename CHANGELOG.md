@@ -7,6 +7,19 @@
 
 ### Added
 
+- **最小 LSP 与编辑器诊断（M7 / T7.2）**：新 crate `ada_lsp` 提供二进制 `ada-lsp`
+  （LSP 最小子集：`initialize` 声明全量同步、`didOpen`/`didChange`/`didClose`、
+  `shutdown`/`exit`、未知请求回 `-32601`），诊断以 0 基 `range` 推送，与 CLI 同源。
+  **只做静态诊断、不执行脚本**（编辑器每次输入都会触发诊断，执行有副作用与卡顿风险），
+  覆盖词法/语法/编译错误；运行时错误仍需 `ada run`。
+- `Engine::check(source)`：静态检查入口（解析 + 编译，不执行），LSP 与 `ada check` 共用。
+- CLI 新增 `ada check <file>`：成功时安静退出 0，失败时输出 `file:line:col: error: <消息>` 并退出 1。
+- VSCode 扩展补齐诊断能力：`editors/vscode/lsp-client.js`（零依赖 LSP 客户端核心，
+  不引用 `vscode`，因此可在编辑器之外被测试）+ `extension.js`（映射到 `DiagnosticCollection`）
+  + `ada.lsp.path` 配置项。
+- `docs/EDITORS.md`：编辑器接入说明（VSCode / Neovim / Emacs / Helix）、协议子集表、诊断范围与守护测试清单。
+- 测试：`crates/ada_lsp/src/lib.rs` 单元 15（含畸形输入不 panic）、`tests/session.rs` 4
+  （真实进程 + 真实分帧会话）、`tests/node_client.rs` 1（**随扩展发布的 JS 客户端**驱动真实二进制做互通验证）。
 - **错误定位（T1.8）**：所有类别的错误现在都携带源码位置——
   `CompileError` 变体带 `Span`（`span()` 访问器），VM 用 `FunctionProto.spans` +
   失败指令下标定位（在帧栈被清空前记录），任务失败用任务**自己**的位置。
@@ -80,6 +93,9 @@
 - **语义测试集（T3.7）**：`crates/ada_vm/tests/semantics.rs` 21 个用例，逐条覆盖 M3 规则。
 
 ### Fixed
+
+- `ada check <file>` / `ada run <file>` 的错误前缀此前会写成 `<eval>`（子命令里的文件路径没被
+  当成来源名），编辑器与 CI 会因此丢掉文件名；现在统一取子命令里的路径（T0.6）。
 
 - **解释器不再因脚本输入杀死宿主进程**（T1.1–T1.4、T1.6）：
   - `%` 除零、`i64::MIN % -1`、`i64::MIN / -1`

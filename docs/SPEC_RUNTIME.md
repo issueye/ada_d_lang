@@ -405,6 +405,7 @@ script.ada:2:5: error: Task 'boom' failed: Type error: Division by zero  # 任�
 | `remaining_fuel()` / `reset_fuel()` | ✅ | 查询剩余燃料 / 手动装填（T2.6） |
 | `eval_value(source) -> Result<Value, Error>` | ✅ | 求值并返回原生值（不含位置） |
 | `eval_diagnostic(source) -> Result<Value, EvalFailure>` | ✅ | 求值并在失败时附带**位置**（T1.8，见 §9.2） |
+| `Engine::check(source) -> Result<(), EvalFailure>` | ✅ | **静态检查**：只做词法/语法/编译检查，**不执行**脚本（T7.2；LSP 与 `ada check` 的入口） |
 | `eval::<T: FromValue>(source)` | ✅ | 泛型转换返回 |
 | 公共类型 re-export | ✅ | `use ada_engine::{Engine, Value, VmError, Sandbox, ...}` 即可，无需直接依赖 `ada_vm`（T0.7） |
 | `eval_async` / `register_async_fn` | ❌ | 不做：D2 选择单线程协作式调度，宿主侧用 `Vm`/脚本内 `spawn` 即可（T4.4） |
@@ -431,7 +432,7 @@ match engine.eval_diagnostic(source) {
 - `Error::position()` 覆盖自带 span 的类别（词法/语法/编译）；运行时位置由 `EvalFailure` 提供。
 - 位置归属规则见 §8.2；`crates/ada_engine/tests/diagnostics.rs` 固定这些行为。
 
-### 9.2 `FromValue` 实现 ✅
+### 9.3 `FromValue` 实现 ✅
 
 | 目标类型 | 转换规则 |
 | :--- | :--- |
@@ -442,7 +443,7 @@ match engine.eval_diagnostic(source) {
 | `String` | `String` 取值；其它类型走 `Display`（不失败） |
 | `serde_json::Value` | `Value::to_json()`；闭包/原生函数/迭代器会被降级为字符串占位 |
 
-### 9.3 嵌入示例（可直接编译）
+### 9.4 嵌入示例（可直接编译）
 
 ```rust
 use ada_engine::{Engine, Value};

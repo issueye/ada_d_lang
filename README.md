@@ -25,9 +25,12 @@
 
 | 目录 | 内容 |
 | :--- | :--- |
-| [editors/vscode](editors/vscode/README.md) | VSCode 语法高亮扩展（关键字/插值/注释/运算符，含与词法表一致的防漂移门禁） |
+| [editors/vscode](editors/vscode/README.md) | VSCode 扩展：语法高亮 + 实时诊断（零依赖 LSP 客户端） |
+| [crates/ada_lsp](crates/ada_lsp) | `ada-lsp` 最小 LSP 服务器（静态诊断：词法/语法/编译） |
 | [benches](benches) | criterion 墙钟基准 + 确定性指令数回归门禁（`benches/programs/*.ada`） |
 | [examples/ai](examples/ai) | AI 场景示例（数据管道、并发、校验），输出由 golden 测试比对 |
+
+编辑器接入方式（VSCode / Neovim / Emacs / Helix）见 [docs/EDITORS.md](docs/EDITORS.md)。
 
 ---
 
@@ -40,13 +43,19 @@ cargo run -p ada_cli -- examples/demo.ada
 # 2. 命令行直接求值（Eval）
 cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
-# 3. 反汇编并查看字节码（Dump）
+# 3. 静态检查（不执行脚本；CI 与编辑器钩子用）
+cargo run -p ada_cli -- check examples/demo.ada
+
+# 4. 反汇编并查看字节码（Dump）
 cargo run -p ada_cli -- dump examples/demo.ada
 
-# 4. 交互式 REPL
+# 5. 交互式 REPL
 cargo run -p ada_cli -- repl
 
-# 5. 运行工作区测试套件
+# 6. 启动编辑器用的 LSP 服务器（stdio）
+cargo run -p ada_lsp -- --stdio
+
+# 7. 运行工作区测试套件
 cargo test --workspace
 ```
 

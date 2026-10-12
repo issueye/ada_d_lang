@@ -16,4 +16,5 @@
 
 # 工程
 
+- [编辑器与工具链集成](EDITORS.md)
 - [开发计划与任务状态](DEVELOPMENT_PLAN.md)

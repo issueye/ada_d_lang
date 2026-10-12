@@ -16,6 +16,7 @@
 | [SPEC_RUNTIME.md](SPEC_RUNTIME.md) | 字节码指令集、编译器策略、VM 执行模型、值模型、错误模型与 CLI 错误格式、宿主嵌入 API、沙箱与 Fuel、性能基线 | 生效中（含 ⚠️/📋 条目） |
 | [SPEC_STDLIB.md](SPEC_STDLIB.md) | 全局内置函数、原生模块（json/math/time/sys/env）、原型方法、**统一迭代器协议与适配器** | 生效中（含 ⚠️/📋 条目） |
 | [SPEC_ASYNC.md](SPEC_ASYNC.md) | 异步语法、并发原语、调度与挂起模型、任务生命周期契约 | 生效中（语法 ✅ / 运行时 📋） |
+| [EDITORS.md](EDITORS.md) | 编辑器与工具链集成：`ada check`、`ada-lsp` 协议子集、VSCode/Neovim/Emacs 接入、诊断范围 | 生效中 |
 | [SUMMARY.md](SUMMARY.md) | 文档站（mdBook）目录：**新增文档必须登记在此**，否则站点看不到 | 生效中 |
 | [../README.md](../README.md) | 项目入口、快速开始、工作区结构 | 生效中 |
 
