@@ -831,6 +831,25 @@ impl Compiler {
             }
 
             Expr::Binary { op, lhs, rhs, .. } => {
+                // T6.6 指令融合：`x + 2` / `i % 2 == 0` / `k < x` 这类"一侧是整数字面量"
+                // 的表达式直接编成一条 `BinaryConst`，省掉一条 `LoadInt` 与一次派发。
+                // 这也**减少指令数**（确定性门禁可度量），不只是省时间。
+                if let Some((operand, value, fused_op)) = fuse_int_literal(*op, lhs, rhs) {
+                    let r_operand = self.alloc_reg()?;
+                    self.compile_expr(operand, r_operand)?;
+                    self.proto.emit(
+                        Instruction::BinaryConst {
+                            dst,
+                            op: fused_op,
+                            src: r_operand,
+                            value,
+                        },
+                        span,
+                    );
+                    self.free_reg(r_operand);
+                    return Ok(());
+                }
+
                 let r_lhs = self.alloc_reg()?;
                 self.compile_expr(lhs, r_lhs)?;
                 let r_rhs = self.alloc_reg()?;
@@ -1908,5 +1927,62 @@ fn global_write_kind(is_mut: bool) -> GlobalWrite {
         GlobalWrite::DeclareMut
     } else {
         GlobalWrite::DeclareImmutable
+    }
+}
+
+/// T6.6：识别"一侧是 i32 范围内的整数字面量"的二元表达式。
+///
+/// 返回 `(要编译成寄存器的另一侧, 常量, 融合后的运算符)`。
+///
+/// 规则：
+/// - 字面量在右侧且运算符可融合 → 直接融合（`x + 2`、`i % 2`）；
+/// - 字面量在左侧时，仅当**交换两侧仍等价**才融合：`Add`/`Mul`/`Eq`/`Ne` 可交换，
+///   比较运算按镜像处理（`2 < x` ≡ `x > 2`）；`Sub`/`Div`/`Mod` 不可镜像，放弃。
+/// - 只处理算术与比较：短路运算符（`&&`/`||`）与位运算不在此列。
+fn fuse_int_literal<'a>(op: BinOp, lhs: &'a Expr, rhs: &'a Expr) -> Option<(&'a Expr, i32, BinOp)> {
+    let allowed = |op: BinOp| {
+        matches!(
+            op,
+            BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge
+        )
+    };
+    if !allowed(op) {
+        return None;
+    }
+
+    if let Some(value) = int_literal(rhs) {
+        return Some((lhs, value, op));
+    }
+
+    let value = int_literal(lhs)?;
+    let mirrored = match op {
+        BinOp::Add | BinOp::Mul | BinOp::Eq | BinOp::Ne => op,
+        BinOp::Lt => BinOp::Gt,
+        BinOp::Le => BinOp::Ge,
+        BinOp::Gt => BinOp::Lt,
+        BinOp::Ge => BinOp::Le,
+        // `k - x`、`k / x`、`k % x` 没有等价的"常量在右"形式
+        _ => return None,
+    };
+    Some((rhs, value, mirrored))
+}
+
+/// 取 i32 范围内的整数字面量（超出 i32 时不能用融合指令，退回通用路径）。
+fn int_literal(expr: &Expr) -> Option<i32> {
+    match expr {
+        Expr::Literal(Literal::Int(n), _) if *n >= i32::MIN as i64 && *n <= i32::MAX as i64 => {
+            Some(*n as i32)
+        }
+        _ => None,
     }
 }

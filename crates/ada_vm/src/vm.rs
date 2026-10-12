@@ -4,6 +4,7 @@ use crate::task::{
     MAIN_TASK,
 };
 use crate::value::{AdapterKind, AsyncKind, Closure, IteratorState, Value};
+use ada_ast::BinOp;
 use ada_ast::Span;
 use ada_bytecode::{Constant, FunctionProto, GlobalWrite, Instruction};
 use std::cmp::Ordering;
@@ -1796,12 +1797,154 @@ impl Vm {
                     }
                 }
 
+                // T6.6 指令融合：`dst = src <op> i32 常量`（编译器只对"一侧是整数字面量"
+                // 的表达式生成）。整数路径内联——这是热路径；其余类型逐个镜像通用分支的
+                // 语义与**错误消息**，等价性由
+                // `crates/ada_vm/tests/instruction_fusion.rs` 的差分测试逐组合固定。
+                Instruction::BinaryConst {
+                    dst,
+                    op,
+                    src,
+                    value,
+                } => {
+                    let src_idx = base + src.0 as usize;
+                    let dst_idx = base + dst.0 as usize;
+                    let k = i64::from(value);
+
+                    let res = match &self.registers[src_idx] {
+                        Value::Int(x) => {
+                            let x = *x;
+                            match op {
+                                BinOp::Add => {
+                                    Value::Int(x.checked_add(k).ok_or_else(|| overflow_err("+"))?)
+                                }
+                                BinOp::Sub => {
+                                    Value::Int(x.checked_sub(k).ok_or_else(|| overflow_err("-"))?)
+                                }
+                                BinOp::Mul => {
+                                    Value::Int(x.checked_mul(k).ok_or_else(|| overflow_err("*"))?)
+                                }
+                                BinOp::Div => {
+                                    if k == 0 {
+                                        return Err(VmError::TypeError(
+                                            "Division by zero".to_string(),
+                                        ));
+                                    }
+                                    match x.checked_rem(k) {
+                                        Some(0) => Value::Int(
+                                            x.checked_div(k).ok_or_else(|| overflow_err("/"))?,
+                                        ),
+                                        Some(_) => Value::Float(x as f64 / k as f64),
+                                        None => return Err(overflow_err("/")),
+                                    }
+                                }
+                                BinOp::Mod => {
+                                    if k == 0 {
+                                        return Err(VmError::TypeError(
+                                            "Modulo by zero".to_string(),
+                                        ));
+                                    }
+                                    Value::Int(x.checked_rem(k).ok_or_else(|| overflow_err("%"))?)
+                                }
+                                BinOp::Eq => Value::Bool(x == k),
+                                BinOp::Ne => Value::Bool(x != k),
+                                BinOp::Lt => Value::Bool(x < k),
+                                BinOp::Le => Value::Bool(x <= k),
+                                BinOp::Gt => Value::Bool(x > k),
+                                BinOp::Ge => Value::Bool(x >= k),
+                                other => {
+                                    return Err(VmError::TypeError(format!(
+                                        "internal error: unsupported fused operator {other:?}"
+                                    )))
+                                }
+                            }
+                        }
+                        other => {
+                            // 非整数左操作数（float / string / 容器 / nil…）：
+                            // 逐个镜像通用指令的行为。这条路径不热，允许克隆。
+                            let other = other.clone();
+                            let rhs = Value::Int(k);
+                            match op {
+                                BinOp::Add => match (&other, &rhs) {
+                                    (Value::Float(x), Value::Int(y)) => Value::Float(x + *y as f64),
+                                    (Value::String(x), y) => {
+                                        let joined = format!("{x}{y}");
+                                        let growth = joined.len().saturating_sub(x.len());
+                                        self.charge(growth)?;
+                                        Value::string(joined)
+                                    }
+                                    _ => {
+                                        return Err(VmError::TypeError(format!(
+                                            "Cannot add {other:?} and {rhs:?}"
+                                        )))
+                                    }
+                                },
+                                BinOp::Sub => match (&other, &rhs) {
+                                    (Value::Float(x), Value::Int(y)) => Value::Float(x - *y as f64),
+                                    _ => {
+                                        return Err(VmError::TypeError(format!(
+                                            "Cannot subtract {rhs:?} from {other:?}"
+                                        )))
+                                    }
+                                },
+                                BinOp::Mul => match (&other, &rhs) {
+                                    (Value::Float(x), Value::Int(y)) => Value::Float(x * *y as f64),
+                                    _ => {
+                                        return Err(VmError::TypeError(format!(
+                                            "Cannot multiply {other:?} and {rhs:?}"
+                                        )))
+                                    }
+                                },
+                                BinOp::Div => match (&other, &rhs) {
+                                    (Value::Float(x), Value::Int(y)) => Value::Float(x / *y as f64),
+                                    _ => {
+                                        return Err(VmError::TypeError(format!(
+                                            "Cannot divide {other:?} by {rhs:?}"
+                                        )))
+                                    }
+                                },
+                                BinOp::Mod => match (&other, &rhs) {
+                                    (Value::Float(x), Value::Int(y)) => Value::Float(x % *y as f64),
+                                    _ => {
+                                        return Err(VmError::TypeError(format!(
+                                            "Cannot modulo {other:?} by {rhs:?}"
+                                        )))
+                                    }
+                                },
+                                BinOp::Eq => Value::Bool(other == rhs),
+                                BinOp::Ne => Value::Bool(other != rhs),
+                                BinOp::Lt => Value::Bool(matches!(
+                                    compare_numeric(&other, &rhs, "<")?,
+                                    Some(Ordering::Less)
+                                )),
+                                BinOp::Le => Value::Bool(matches!(
+                                    compare_numeric(&other, &rhs, "<=")?,
+                                    Some(Ordering::Less | Ordering::Equal)
+                                )),
+                                BinOp::Gt => Value::Bool(matches!(
+                                    compare_numeric(&other, &rhs, ">")?,
+                                    Some(Ordering::Greater)
+                                )),
+                                BinOp::Ge => Value::Bool(matches!(
+                                    compare_numeric(&other, &rhs, ">=")?,
+                                    Some(Ordering::Greater | Ordering::Equal)
+                                )),
+                                other_op => {
+                                    return Err(VmError::TypeError(format!(
+                                        "internal error: unsupported fused operator {other_op:?}"
+                                    )))
+                                }
+                            }
+                        }
+                    };
+                    self.registers[dst_idx] = res;
+                }
+
                 Instruction::Eq { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];
                     self.registers[base + dst.0 as usize] = Value::Bool(a == b);
                 }
-
                 Instruction::Ne { dst, lhs, rhs } => {
                     let a = &self.registers[base + lhs.0 as usize];
                     let b = &self.registers[base + rhs.0 as usize];

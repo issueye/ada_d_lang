@@ -1,4 +1,4 @@
-use ada_ast::Span;
+use ada_ast::{BinOp, Span};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -191,6 +191,20 @@ pub enum Instruction {
         src: Reg,
         /// 这次全局写入的**种类**（T8.3）：声明会「接管」该名字，赋值才受保护。
         kind: GlobalWrite,
+    },
+
+    /// 与 **i32 常量**的二元运算（T6.6 指令融合）：`dst = src <op> value`。
+    ///
+    /// 编译器把 `x + 2` / `i % 2 == 0` 这类"一侧是整数字面量"的表达式直接编成一条
+    /// 指令，省掉一条 `LoadInt` 与一次派发。`op` 仅允许
+    /// `Add/Sub/Mul/Div/Mod/Eq/Ne/Lt/Le/Gt/Ge`（由编译器保证），语义与对应的通用指令
+    /// **逐字一致**（含错误消息），由
+    /// `crates/ada_vm/tests/instruction_fusion.rs` 的差分测试固定。
+    BinaryConst {
+        dst: Reg,
+        op: BinOp,
+        src: Reg,
+        value: i32,
     },
 
     // Data structures

@@ -1,8 +1,8 @@
 # 基准程序的指令数基线（开发计划 T6.1 / T6.5）
 # 格式：<程序名>\t<指令数>；超过基线 5% 时 perf_budget 测试失败。
 # 重新生成：UPDATE_BUDGETS=1 cargo test -p ada_vm --test perf_budget -- --nocapture
-fib	1725566
-iterator_pipeline	1600006
+fib	1425469
+iterator_pipeline	1100009
 json_roundtrip	45012
-numeric_loop	1800009
+numeric_loop	1400009
 string_concat	100010
