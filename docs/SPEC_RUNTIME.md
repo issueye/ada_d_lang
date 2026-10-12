@@ -97,7 +97,7 @@ enum Value {
 | 一元 | `Neg` `Not` `BitNot` `{dst,src}` |
 | 比较 | `Eq` `Ne` `Lt` `Le` `Gt` `Ge` `{dst,lhs,rhs}` |
 | 位运算 | `BitAnd` `BitOr` `BitXor` `Shl` `Shr` `{dst,lhs,rhs}` |
-| 跳转 | `Jump{offset}` `JumpIfFalse{cond,offset}` `JumpIfTrue{cond,offset}` `JumpIfNil{cond,offset}` |
+| 跳转 | `Jump{offset}` `JumpIfFalse{cond,offset}` `JumpIfTrue{cond,offset}` `JumpIfNil{cond,offset}` `MatchFail`（T3.2：非穷尽 match 的显式失败） |
 | 调用 | `Call{dst,callee,arg_start,arg_count}` `Return{src:Option<Reg>}` |
 | 全局 | `GetGlobal{dst,name_idx}` `SetGlobal{name_idx,src}` |
 | 容器 | `NewArray{dst,start,count}` `NewMap{dst}` `MapSet{map,key,val}` `GetIndex{dst,target,index}` `SetIndex{target,index,val}` `GetField{dst,target,field_idx,optional}` `SetField{target,field_idx,val}` |
@@ -125,7 +125,10 @@ enum Value {
 
 ### 4.2 作用域与局部变量 ✅
 
-- `locals: Vec<Local{name, reg, depth}>` + `scope_depth`；`resolve_local` 逆序查找最近声明。
+- `locals: Vec<Local{name, reg, depth, boxed, is_mut}>` + `scope_depth`；`resolve_local` 逆序查找最近声明，
+  返回 `(寄存器, 是否装箱, 是否可写)`。
+- **不可变性（T3.1）**：`is_mut == false` 的局部变量在赋值目标位置直接报 `CompileError::AssignToImmutable`；
+  被闭包捕获的变量把可变性一并传给子编译器（`outer_names: HashMap<String, bool>`），因此闭包内也不可写。
 - 进入块 `enter_scope()`，退出 `exit_scope()` 弹出并释放 `depth > scope_depth` 的局部变量。
 - 名字未命中局部变量则编译为 `GetGlobal`（缺失在运行时报 `UndefinedGlobal`）。
 
@@ -220,9 +223,9 @@ struct Vm {
 | :--- | :--- | :--- | :--- | :--- |
 | `+` | Int，溢出报 `TypeError`（`checked_add`） | Float | Float | ✅ 任一侧为 String 则字符串拼接（`1 + "a"` → `"1a"`） |
 | `-` `*` | Int，溢出报 `TypeError`（`checked_sub` / `checked_mul`） | Float | Float | ❌ `TypeError` |
-| `/` | 整除则 Int，否则 Float；`/0` → `TypeError`；`i64::MIN / -1` → `TypeError`(overflow) | Float；**`x/0.0` 得 `inf`/`NaN`（不报错）⚠️** | Float | ❌ `TypeError` |
-| `%` | `%0` → `TypeError`；`i64::MIN % -1` → `TypeError`(overflow)；混合类型不支持 ⚠️ | Float | ❌ `TypeError`（`5.0 % 2` 报错）⚠️ | ❌ `TypeError` |
-| 比较 `< <= > >=` | bool | bool | bool | 类型不匹配**静默返回 `false`** ⚠️ |
+| `/` | 整除则 Int，否则 Float；`/0` → `TypeError`；`i64::MIN / -1` → `TypeError`(overflow) | Float；`x/0.0` 得 `inf`/`NaN`（IEEE-754，决策见 §6.3） | Float | ❌ `TypeError` |
+| `%` | `%0` → `TypeError`；`i64::MIN % -1` → `TypeError`(overflow) | Float | ✅ 提升为 Float 取模（`5.0 % 2` → `1.0`，T3.5） | ❌ `TypeError` |
+| 比较 `< <= > >=` | bool | bool | bool | ✅ **只接受数值**：非数值操作数报 `TypeError`（T3.5）；`NaN` 比较恒为 `false` |
 | 位运算 `& \| ^` | Int | ❌ `TypeError` | ❌ `TypeError` | ❌ `TypeError` |
 | 移位 `<< >>` | Int；移位量不在 `0..64`（含负数）→ `TypeError` | ❌ | ❌ | ❌ |
 | 一元 `-` | Int；`-(i64::MIN)` → `TypeError`(overflow) | Float | — | ❌ |
@@ -236,9 +239,16 @@ struct Vm {
 | G-R8 | 整数溢出导致宿主 panic（debug）/ 静默回绕（release） | ✅ 已修复：`+ - * / %` 与一元 `-` 全部走 `checked_*`，溢出返回 `TypeError`（决策 D5 = A，T1.2） | ✅ T1.2 |
 | G-R9 | `% 0` panic | ✅ 已修复：返回 `TypeError("Modulo by zero")`，与 `/` 一致（T1.1） | ✅ T1.1 |
 | G-R10 | 移位越界 panic | ✅ 已修复：校验 `0 <= n < 64`，否则 `TypeError`（T1.3） | ✅ T1.3 |
-| G-R11 | `x % y` 混合类型不支持 | 提升为 Float 后取模 | T3.5 |
-| G-R12 | `x / 0.0` 静默得 `inf` | 明确定义（保留 IEEE 语义或报错） | T3.5 |
-| G-R13 | 比较类型不匹配静默 `false` | 明确定义（建议报错） | T3.5 |
+| G-R11 | `x % y` 混合类型不支持 | ✅ 已修复（T3.5）：混合数值类型提升为 Float 取模 | ✅ T3.5 |
+| G-R12 | `x / 0.0` 静默得 `inf` | ✅ 已定案（T3.5）：**整数除零报错、浮点遵循 IEEE**（`inf`/`NaN`）——见 §6.3 | ✅ T3.5 |
+| G-R13 | 比较类型不匹配静默 `false` | ✅ 已修复（T3.5）：非数值操作数报 `TypeError`，`NaN` 比较恒为 false | ✅ T3.5 |
+
+### 6.3 浮点除零为何不报错（决策记录）
+
+`fuel`/沙箱的目标是"明确且可预期"，而不是"所有异常都中断"。整数是精确类型，
+`1 / 0` 无定义，因此报错；`f64` 遵循 IEEE-754，`1.0 / 0.0 = inf` 是标准且可检测
+（`is_finite()`）的结果，`math.INF` 也把它作为一等值暴露。二者在规范里分别写清，
+避免"看起来像错误却被静默吞掉"的情况（这也正是 §6.1 比较运算改为报错的原因）。
 
 > **规范红线**：任何脚本输入都不得让宿主进程 panic（开发计划 §5 门禁第 3 条）。当前 4 类 panic 使这条红线处于**未达成**状态。
 
@@ -275,8 +285,8 @@ struct Vm {
 | :--- | :--- | :--- |
 | `LexError` | `UnexpectedChar` `UnterminatedString` `UnterminatedBlockComment` `InvalidNumber` `UnterminatedInterpExpr` | 词法阶段 |
 | `ParseError` | `UnexpectedToken` `UnexpectedEof` `InvalidAssignmentTarget` `Lex(..)` | 语法阶段 |
-| `CompileError` | `VariableNotFound` `TooManyRegisters` `InvalidAssignmentTarget` | 编译阶段 |
-| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` | 运行阶段 |
+| `CompileError` | `VariableNotFound` `TooManyRegisters` `InvalidAssignmentTarget` **`AssignToImmutable`** | 编译阶段（T3.1：向 `let` 绑定赋值） |
+| `VmError` | `OutOfFuel` `StackOverflow` `UndefinedGlobal` `NotCallable` `ArityMismatch` `TypeError` `IndexOutOfBounds` `NativeError` **`NoMatch`** | 运行阶段（T3.2：非穷尽 `match`） |
 | `ada_engine::Error` | `Parse` `Compile` `Vm` `Conversion` | 宿主门面统一封装 |
 
 | 规范要求 | 状态 |

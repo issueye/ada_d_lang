@@ -43,7 +43,7 @@
 | :--- | :--- | :--- |
 | `to_int(v)` | ✅ | Int 原样；Float 截断（±inf/NaN 走 Rust 饱和转换）；Bool→1/0；String 解析十进制（失败 `nil`）；其它 → `nil` |
 | `to_float(v)` | ✅ | Float 原样；Int 提升；Bool→1.0/0.0；String 解析（失败 `nil`） |
-| `to_str(v)` | ✅ | 任意值 `Display`；⚠️ Float 输出无小数位（`to_str(1.0) == "1"`，任务 T3.6） |
+| `to_str(v)` | ✅ | 任意值 `Display`；整数值的浮点保留小数位（`to_str(1.0) == "1.0"`，T3.6），极大/极小值用科学计数法 |
 | `to_bool(v)` | ✅ | 按真值规则（见 [SPEC_LANGUAGE §9.2](SPEC_LANGUAGE.md)） |
 
 ### 2.4 断言 ✅
@@ -332,7 +332,7 @@ engine.register_module(MyToolModule::new());
 | G-S6 | `sum`/`min`/`max`/`abs`/`round` 对非数字**静默**处理 | ⚠️ 口径统一 | T3.5 |
 | G-S7 | 舍入函数不在 `math` 命名空间，命名不一致 | ⚠️ | T3.5 |
 | G-S8 | map 迭代/`keys()`/`entries()` 顺序不保证（`HashMap`） | ⚠️ | 规范明示；如需稳定顺序见 D6 |
-| G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ⚠️ | T3.6 |
+| G-S9 | Float 字符串化丢失小数位（`1.0` → `"1"`） | ✅ 已修复（T3.6）：`1.0` → `"1.0"`，`1e300` → `"1e300"` | ✅ T3.6 |
 | G-S10 | 缺失 `is_iterator` | ✅ 已修复（T2.1）：已注册 `is_iterator` | ✅ T2.1 |
 | G-S11 | `NativeModule` 与模块注册接口不存在 | 📋 | T5.5 |
 | G-S12 | 适配器结果为即时求值（非惰性），大区间会先物化 | ⚠️ 已按决策 D3 = A 记录 | 后续评估惰性链 |

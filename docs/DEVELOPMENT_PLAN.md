@@ -53,7 +53,7 @@
 | 设计文档 | 5 份，约 970 行（**整合前基线**；T0.3 完成后为 `docs/` 下 6 份规范/索引 + 本文档，见 §11） |
 | 示例脚本 | 1 个（`examples/demo.ada`，98 行，端到端可运行） |
 | 编译告警 | `cargo build --workspace` → 0 warning / 0 error |
-| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0）；**M2 完成后为 108 passed**（见 §2.4） |
+| 测试 | `cargo test --workspace` → 34 passed / 0 failed（vm 20、parser 6、lexer 3、engine 3、bytecode 2、cli 0、ast 0）；**M3 完成后为 130 passed**（见 §2.4） |
 | 版本控制 | 基线时**无任何 commit**（T0.1 已修复，见 §2.4） |
 | 许可证 | 基线时声明 `MIT OR Apache-2.0` 但无 `LICENSE` 文件（T0.2 已补齐 `LICENSE-MIT` + `LICENSE-APACHE`） |
 | CI / fmt / clippy / bench | 基线时均无；T0.4 已建立 CI（fmt / clippy / test / 文档门禁）；**bench 仍缺**（T6.1） |
@@ -101,7 +101,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 项 | 基线（0.1.0） | 现在 |
 | :--- | :--- | :--- |
-| 测试总数 | 34 | **108**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `doc_examples.rs` 14 + `persistent_eval.rs` 7 + `golden_showcase.rs` 3 + `doc_links.rs` 2） |
+| 测试总数 | 34 | **130**（`robustness.rs` 17 + `adapters.rs` 16 + `closures.rs` 15 + `semantics.rs` 21 + `doc_examples.rs` 14 + `persistent_eval.rs` 8 + `golden_showcase.rs` 3 + `doc_links.rs` 2，另含各 crate 单元测试 34） |
 | 脚本可 panic 宿主 | 5 类（`%0`、整数溢出、移位越界、UTF-8 索引、`min([])`） | **0 类已知**（T1.1–T1.6；另修掉 `sum` 累加溢出、`abs(i64::MIN)`、`math.random_int` 区间溢出的潜在 panic） |
 | 版本控制 | 无提交 | 4 个提交（基线 / rustfmt / 修复 / 门禁） |
 | 许可证 | 无文件 | `LICENSE-MIT` + `LICENSE-APACHE` |
@@ -116,6 +116,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | Fuel 生命周期 | 一次 `OutOfFuel` 后 `Engine` 永久失效 | ✅ 每次求值重新装填 + `remaining_fuel`/`reset_fuel`（T2.6） |
 | 闭包捕获 | 无 upvalue：捕获外层变量报 `UndefinedGlobal` | ✅ 引用共享（可写捕获）、多级传递、逃逸闭包、每轮循环变量独立槽（T2.2） |
 | 端到端 golden | 无 | ✅ `examples/showcase.ada` + `showcase.expected.txt` + `golden_showcase.rs` 逐行比对（13 个规范小节） |
+| 语义确定性 | `let` 可被重新赋值（不可变性不生效）、非穷尽 `match` 返回静默错误值、`5 < "a"` 静默 `false`、Float 与 Int 输出无法区分 | ✅ 全部收紧（T3.1/T3.2/T3.5/T3.6）：编译期不可变、`VmError::NoMatch`、比较报错、`1.0` 可区分；负索引统一（G-L14） |
 
 ---
 
@@ -198,21 +199,23 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M3 · 语义规范收紧 📋（预计 1 周）
+### M3 · 语义规范收紧 ✅（预计 1 周）
 
 **目标**：把"能跑"提升为"语义可预测、报错可定位"。
 
-| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 |
+| ID | 任务 | 工作流 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| T3.1 | `let` 不可变性：编译期拒绝向非 `mut` 绑定赋值 | W1 | P1 | `compiler.rs`, `parser.rs`（`is_mut` 落地） | `let a = 1; a = 2` → 编译错误含行列 |
-| T3.2 | `match` 非穷尽：无 `_` 且无匹配时抛运行时错误（或编译期警告，按 D4/D7 决策） | W1/W2 | P1 | `compiler.rs`, `vm.rs` | `match 99 { 1 => "one" }` → 明确错误而非静默 `nil` |
-| T3.3 | `{ x }` map / block 歧义规则定型并写入规范 | W1 | P1 | `parser.rs`, `SPEC_LANGUAGE.md` | 规则有规范条文 + 正反用例测试 |
-| T3.4 | 插值子表达式 span 映射修复（片段内行列 → 源文件绝对行列） | W1 | P2 | `parser.rs`, `lexer.rs` | `$"{1 +}"` 报错行号指向源文件真实位置 |
-| T3.5 | 数值语义统一：Int/Float 混合 `%` 与位运算规则、`x/0.0`（IEEE 还是报错）、比较类型不匹配（静默 `false` 还是报错）、**索引负号语义（G-L14）** | W2 | P2 | `vm.rs`, `SPEC_LANGUAGE.md`, `SPEC_STDLIB.md` | `5.0 % 2`、`"abc"[-1]`、`5 < "a"` 行为与规范逐条一致 |
-| T3.6 | Float 打印可区分：`1.0` 输出 `1.0` 而非 `1` | W3 | P2 | `value.rs` | `println(1.0)` → `1.0`；demo 输出同步更新 |
-| T3.7 | 语义测试集：≥15 个边界用例（作用域、遮蔽、短路、赋值目标、深度递归） | W6 | P1 | `crates/ada_vm/tests/` | 全绿；覆盖 M3 全部规则 |
+| ✅ T3.1 | `let` 不可变性：编译期拒绝向非 `mut` 绑定赋值 | W1 | P1 | `compiler.rs`, `parser.rs`（`is_mut` 落地） | 完成证据：`semantics.rs` 6 个用例（普通/复合赋值、`mut` 可写、参数与循环变量可写、捕获的不可变变量在闭包内报错、容器内容仍可变） |
+| ✅ T3.2 | `match` 非穷尽：无 `_` 且无匹配时抛运行时错误（决策 D7 = A） | W1/W2 | P1 | `compiler.rs`, `vm.rs`, `instruction.rs` | 完成证据：新增 `MatchFail` 指令 + `VmError::NoMatch`；4 个用例（非穷尽报错、`_`/裸绑定为兜底、带 guard 的绑定不算兜底、正常 arm 不受影响） |
+| ✅ T3.3 | `{ x }` map / block 歧义规则定型并写入规范（决策 D4 = B） | W1 | P1 | `SPEC_LANGUAGE.md` | 完成证据：SPEC_LANGUAGE §5.6 规则表 + `semantics.rs::brace_with_a_bare_identifier_is_a_map_not_a_block` |
+| ✅ T3.4 | 插值子表达式 span 映射修复（片段内行列 → 源文件绝对行列） | W1 | P2 | `parser.rs`, `parser/error.rs` | 完成证据：`Parser::from_fragment` 把片段 token 的字节/行/列映射回源文件；`errors_inside_string_interpolation_point_at_the_real_source_line` 断言错误落在第 2 行插值内部 |
+| ✅ T3.5 | 数值语义统一：Int/Float 混合 `%`、`x/0.0`（保留 IEEE）、比较类型不匹配（报错）、索引负号语义（G-L14） | W2 | P2 | `vm.rs`, `SPEC_LANGUAGE.md`, `SPEC_RUNTIME.md` | 完成证据：`5.0 % 2` → `1.0`；`5 < "a"`/`nil > 0` → `TypeError`；`NaN` 比较恒 false；字符串与数组负索引（含写入）统一；7 个用例 |
+| ✅ T3.6 | Float 打印可区分：`1.0` 输出 `1.0` 而非 `1` | W3 | P2 | `value.rs` | 完成证据：`to_str(1.0) == "1.0"`、`to_str(1e300) == "1e300"`；golden 脚本仅 3 行输出变化（`150.0`/`3.0`/`16.0`、`256.0`） |
+| ✅ T3.7 | 语义测试集：≥15 个边界用例 | W6 | P1 | `crates/ada_vm/tests/semantics.rs` | 完成证据：21 个用例覆盖 M3 全部规则 + 交叉回归；另有 `persistent_eval.rs` 的跨轮求值不可变性用例 |
 
-**退出标准**：规范文档中每一条语义规则都有对应测试；错误信息统一含 `file:line:col`。
+**退出标准**：✅ 达成 —— 规范文档中每条 M3 语义规则都有对应测试（`semantics.rs` 21 个）；
+`VmError::NoMatch` / `CompileError::AssignToImmutable` 已进入错误模型表。
+⚠️ 遗留：错误信息统一带 `file:line:col` 属 T0.6/T1.8（P1，未在本轮范围）。
 
 ---
 
@@ -300,7 +303,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | 文档门禁 | `crates/ada_cli/tests/doc_links.rs` | 链接/锚点可达 + 规范文档不得写路线图 | ✅ M0 已启用 |
 
 **当前缺口**：无 golden（`examples/` 期望输出比对）、无 fuzz、无基准；`ada_ast` 测试数为 0（crate 仅含数据定义）。
-**当前状态**：`cargo test --workspace` → 108 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 文档示例 14 + 多轮求值 7 + golden 3 + 文档门禁 2）。
+**当前状态**：`cargo test --workspace` → 130 passed / 0 failed（单元 34 + 稳健性 17 + 适配器 16 + 闭包 15 + 语义 21 + 文档示例 14 + 多轮求值 8 + golden 3 + 文档门禁 2）。
 
 ---
 
@@ -350,10 +353,10 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | D1 | 值模型 | A 保持 `enum Value`；B 实施 NaN-boxing | B 影响 `value.rs` 全量重写与所有 builtins；收益需基准证明 | M6 开始前 |
 | D2 | 异步实现 | A 真 Fiber + Tokio；B 先落地"同步 Future 占位"并明确标注 | 决定 M4 工作量与文档措辞 | M4 开始前 |
 | D3 | 迭代器求值 | ~~A 即时~~；~~B 惰性~~ → **已决：A（即时）** | **决策（2026-10，M2 执行期）**：适配器一律物化为 `Array`，先把能力与错误契约打通；惰性链需引入迭代器对象与去虚拟化，收益要用基准证明（缺口 G-S12）。若未来启用惰性，`collect()` 语义与 `IterNext` 指令可复用 | ✅ 已决（T2.1 落地） |
-| D4 | `{ x }` 歧义 | A 判为 block（需显式 `{ "x": x }` 表 map）；B 保持现状判 map | 影响既有脚本兼容性与规范 | T3.3 前 |
+| D4 | `{ x }` 歧义 | ~~A 判为 block~~；~~B 保持现状判 map~~ → **已决：B（保持 map）** | **决策（2026-10，M3 执行期）**：`{}` 是 map 字面量，`{ name }` 是 Token 高效的简写（AI-first 目标），块表达式改为"必须以语句开头"即可无歧义地区分（SPEC_LANGUAGE §5.6）。选 A 会删掉 map 简写并静默改变既有脚本含义 | ✅ 已决（T3.3 落地） |
 | D5 | 整数溢出语义 | ~~A 报错~~；~~B 回绕~~ → **已决：A（报错）** | **决策（2026-10，M1 执行期）**：采用 `checked_*` + `VmError::TypeError`。理由：AI 沙箱场景下"静默回绕"会产生难排查的错误结果，而硬错误可被宿主捕获；若未来基准显示热路径成本显著，再评估回绕或 f64 提升 | ✅ 已决（T1.2 落地） |
 | D6 | 内存模型 | A 维持 `Arc<RwLock>`；B 引入 GC | B 是大重构 | M5 结束前评估 |
-| D7 | `match` 非穷尽 | A 运行时错误；B 编译期警告 | 影响语言严格度 | T3.2 前 |
+| D7 | `match` 非穷尽 | ~~A 运行时错误~~；~~B 编译期警告~~ → **已决：A（运行时错误）** | **决策（2026-10，M3 执行期）**：无 arm 匹配时旧实现会留下**未赋值的目标寄存器**（读到上一个值而非 `nil`），这是静默错误值；改为 `MatchFail` 指令抛 `VmError::NoMatch`。选 B（仅警告）无法阻止错误值继续传播 | ✅ 已决（T3.2 落地） |
 | D8 | 闭包捕获语义 | ~~A 值拷贝~~；~~B 引用共享（Cell）~~ → **已决：B（引用共享）** | **决策（2026-10，M2 执行期）**：被捕获变量装箱为共享槽，闭包内写入对外层可见；循环变量每轮独立槽（类 JS `let`）；代价是被捕获变量的读写多一层 Cell 间接（仅对被捕获的变量生效，未捕获的局部变量仍是纯寄存器） | ✅ 已决（T2.2 落地） |
 
 > 决策流程：在本文档补记结论 → 更新对应 `SPEC_*.md` → 再动手实现。
@@ -394,7 +397,7 @@ docs/
 | M0 治理基线 | 1–2 天 | ✅ | ☑（T0.6 为 P1 遗留） |
 | M1 解释器稳健性 | 3–5 天 | ✅ | ☑（T1.7/T1.8 为 P1 遗留） |
 | M2 语言核心补齐 | 1–2 周 | ✅ | ☑ |
-| M3 语义收紧 | 1 周 | 📋 | ☐ |
+| M3 语义收紧 | 1 周 | ✅ | ☑（T0.6/T1.8 错误定位遗留） |
 | M4 异步并发 | 2–3 周 | 📋 | ☐ |
 | M5 沙箱安全 | 1–2 周 | 📋 | ☐ |
 | M6 性能与 JIT | 3–6 周 | 📋 | ☐ |

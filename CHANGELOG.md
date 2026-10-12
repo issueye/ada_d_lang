@@ -24,6 +24,10 @@
 - `LICENSE-MIT` 与 `LICENSE-APACHE`，与 `Cargo.toml` 声明的 `MIT OR Apache-2.0` 对齐（T0.2）。
 - CI 质量门禁 `.github/workflows/ci.yml`：`cargo fmt --check`、`cargo clippy -D warnings`、`cargo test --workspace`（T0.4）。
 - 字符串 `.len_bytes`：返回 UTF-8 字节数（T2.5）。
+- **`let` 不可变性（T3.1）**：向非 `mut` 绑定赋值现在是**编译期错误**（`CompileError::AssignToImmutable`）。`mut`、函数参数、`for` 变量、`match` 绑定不受限；容器内容仍可变（`let a = [1]; a.push(2)` 合法，与 JS `const` 一致）。
+- **`match` 非穷尽检查（T3.2）**：无 `_`（或无 guard 的标识符绑定）作为兜底时，未匹配即抛 `VmError::NoMatch`，不再留下未赋值的匹配目标。新增 `MatchFail` 指令。
+- **负索引（T3.5）**：字符串与数组的索引支持从末尾计数，与 `.slice` 一致；数组写入同样支持（`a[-1] = v`）。
+- **语义测试集（T3.7）**：`crates/ada_vm/tests/semantics.rs` 21 个用例，逐条覆盖 M3 规则。
 
 ### Fixed
 
@@ -35,12 +39,16 @@
   - `min([])` / `max([])` 空数组索引越界
 - 迭代器适配器 arity 元数据错误导致的 `map([1,2])` 越界 panic（由 `adapters.rs` 用例捕获）。
 - `sum` 整数累加溢出、`abs(i64::MIN)`、`math.random_int` 区间宽度溢出三处潜在 panic（改用 checked 运算 / i128）。
+- 插值子表达式内的语法错误定位错误（T3.4）：片段被独立解析导致行号从 1 开始；现在通过 `Parser::from_fragment` 把 token 的字节/行/列映射回源文件，错误指向真实的插值位置。
+- 混合数值类型的取模（`5.0 % 2`、`5 % 2.0`）由报错改为提升为 Float 计算（T3.5）。
+- 比较运算对非数值操作数静默返回 `false` 改为报 `TypeError`（T3.5）；`NaN` 与任何值的有序比较仍为 `false`（IEEE-754）。
+- 整数值的浮点不再与整数同形（T3.6）：`to_str(1.0)` 由 `"1"` 改为 `"1.0"`，极大/极小值用科学计数法（`1e300`）。
 
 ### Changed
 
 - 文档整合为「单一权威」结构：新增 `docs/README.md` 索引与 `SPEC_LANGUAGE`/`SPEC_RUNTIME`/`SPEC_STDLIB`/`SPEC_ASYNC`，移除 `LANGUAGE_DESIGN`/`STDLIB_DESIGN`/`ITERATOR_SPEC`/`ASYNC_DESIGN`；路线图唯一收敛到 `docs/DEVELOPMENT_PLAN.md`（T0.3）。
 - `cargo fmt` 全量格式化（纯格式，无语义变更）。
-- 冲突的语义已定案：整数溢出采用「报错」而非回绕（决策 D5）；迭代器适配器采用「即时求值」（决策 D3）。
+- 冲突的语义已定案：整数溢出采用「报错」而非回绕（决策 D5）；迭代器适配器采用「即时求值」（决策 D3）；闭包捕获采用「引用共享」（决策 D8）；`{ x }` 保持为 map 简写（决策 D4）；`match` 非穷尽采用「运行时错误」而非警告（决策 D7）。
 - 成员派发优先级明确化：map 上的适配器同名键优先（`{ map: 7 }.map` → `7`），既有原型方法名（`len` 等）仍优先于同名键（`{ len: 9 }.len` → `1`，缺口 G-S12/S13）。
 
 ### Breaking
@@ -49,3 +57,7 @@
 - 字符串索引改为按字符定位：`"语言"[0]` 由 panic 变为返回 `"语"`。
 - 整数溢出、取模零、移位越界由「debug 构建 panic / release 构建静默回绕」改为返回 `VmError::TypeError`（宿主可用 `Error::Vm` 捕获）。
 - `sum` 语义扩展为接受任意可迭代值（原先仅接受数组，非数组报错）；`sum`/`join`/`enumerate`/`rev` 由原型内联实现改为统一适配器实现。
+- `let` 绑定的重新赋值由「静默生效」改为「编译错误」：既有脚本若依赖 `let x = 0` 后再 `x += 1`，需改为 `mut x = 0`（T3.1）。
+- 非穷尽 `match` 由「返回未赋值的旧寄存器值」改为抛 `VmError::NoMatch`：此前 `let r = match 99 { 1 => "one" }` 会得到一个不确定的值（T3.2）。
+- 有序比较对非数值操作数由静默 `false` 改为 `TypeError`：`if x > 0` 这类写法若 `x` 可能不是数值，需先做类型判断（T3.5）。
+- 浮点输出格式变化：`1.0` 由 `1` 变为 `1.0`，依赖旧输出的快照/断言需更新（T3.6，`examples/showcase.expected.txt` 已同步）。
