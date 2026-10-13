@@ -13,9 +13,10 @@
 .ada 源文件
    │  ada_lexer::Lexer           手写扫描器 → Vec<Token>（含 ASI Newline）
    │  ada_parser::Parser         递归下降 + Pratt → ada_ast::Program
-   │  ada_bytecode::Compiler     单遍编译 → FunctionProto（寄存器字节码）
-   │  ada_vm::Vm::execute        帧栈解释执行 → Value
-   └  ada_engine::Engine         宿主门面（register_fn / set_fuel / eval<T>）
+   │  Engine::resolve_imports    文件 import：加载 + 声明合并（受 root 边界约束，T8.7/T8.8）
+   │  ada_bytecode::Compiler     单遍编译 → FunctionProto；`std:` 导入编为 ImportModule/ImportNamed（T8.14）
+   │  ada_vm::Vm::execute        帧栈解释执行 → Value；导入指令调 `std_module` 注册内置模块
+   └  ada_engine::Engine         宿主门面（register_fn / set_fuel / set_import_root / eval / eval_file）
 ```
 
 | 阶段 | Crate | 状态 |
@@ -118,6 +119,7 @@ VM 的寄存器文件是 `Vec<Value>`（2048 槽），48 字节意味着 **96 Ki
 | **条件融合（T6.7）** | `JumpIfNotCompare{op,lhs,rhs,offset}` 与 `JumpIfNotCompareConst{op,src,value,offset}`：`if`/`while`/`match` guard 的条件是比较表达式时，编译器直接发出"为假则跳转"，省掉比较指令、临时寄存器与一次 truthiness 读取。可镜像时自动换向（`while 0 < i` → `Gt`），不可镜像（`2 - x` 之类）不融合 |
 | 调用 | `Call{dst,callee,arg_start,arg_count}` `Return{src:Option<Reg>}` |
 | 全局 | `GetGlobal{dst,name_idx}` `SetGlobal{name_idx,src,kind:GlobalWrite}`（T8.3：`Assign`/`DeclareMut`/`DeclareImmutable`） |
+| 模块导入（T8.14） | `ImportModule{module_idx,alias_idx}`（命名空间：注册整模块）、`ImportNamed{module_idx,member_idx,alias_idx}`（具名：绑定单个函数）——VM 执行时调 `builtins::std_module`（permissive + 引擎内存预算） |
 | 容器 | `NewArray{dst,start,count}` `NewMap{dst}` `MapSet{map,key,val}` `GetIndex{dst,target,index}` `SetIndex{target,index,val}` `GetField{dst,target,field_idx,optional}` `SetField{target,field_idx,val}` |
 | 字符串 | `StringConcat{dst,start,count}` |
 | 闭包 | `Closure{dst,proto_idx}`（无捕获）、`MakeClosure{dst,proto_idx,upvalue_start,upvalue_count}`（带捕获） |
@@ -483,9 +485,9 @@ fn main() -> Result<(), ada_engine::Error> {
 
 | 面 | 实现 | 强制点 |
 | :--- | :--- | :--- |
-| 模块可见性 | `Engine::new()` 默认 **strict**：只注册 `json`/`math`/`crypto` 与语言内置；`time`/`sys`/`env`/`sleep_ms`/**`fs`** **不注册** | `builtins::register_all(globals, &sandbox)` |
-| 越权错误 | `VmError::CapabilityDenied { name, profile }` | `Instruction::GetGlobal` 的拒绝名单（`time`/`env`/`sys`/`sleep_ms`/`fs`） |
-| `env` 读取 | 只读宿主显式声明的键；未授权键返回 `nil`/`false` 且**不触碰** `std::env` | 白名单在模块创建时捕获进闭包 |
+| 模块可见性（T8.14，D12） | **所有内置模块默认不注册**；脚本必须 `import X from "std:X"`。`fs` 例外：`with_fs_root` 时按根目录注册 | `builtins::register_all`（仅核心函数）+ VM 执行 `ImportModule`/`ImportNamed` 时调 `builtins::std_module` |
+| 未导入 / 越权 | 未导入时模块名 → `UndefinedGlobal` / `CapabilityDenied`；`sleep_ms` 等仍由沙箱拒绝（`CapabilityDenied { name, profile }`，`ImportModule` 由 VM 执行 | `Instruction::GetGlobal` 拒绝名单 + import 注册 |
+| `env` 读取（D12） | `import env` 即**完全授权**：可读全部键（等价 `create_env_module(None)`）；旧白名单路径保留于 `Sandbox`（供 `register_all` 的历史路径），但默认注册已移除 | `builtins::std_module` |
 | 文件系统（T7.5） | **默认无 `fs`**；只有 `Sandbox::with_fs_root(dir)`（CLI：`--fs-root DIR`）才注册，且所有路径被规范化到根目录内（`..`、绝对路径、符号链接、前缀混淆均拒绝），单次 I/O 有字节上限 | `builtins::fs::resolve_within` + 模块注册开关 |
 | 网络 | 未提供任何 API（`http` 明确不做，见决策 D9） | — |
 | 内存 | `MemoryBudget`（近似、共享原子计数器）+ 大对象分配前预检查 | VM 指令 + 原生原型 + 迭代器物化 |
@@ -496,10 +498,10 @@ fn main() -> Result<(), ada_engine::Error> {
 
 | Profile | 允许 | 用途 |
 | :--- | :--- | :--- |
-| `strict()`（`Engine::new()` 默认） | 纯计算 + `json` + `math` + `crypto` + 字符串/集合原型 + 任务 | AI 生成代码的默认执行环境 |
-| `standard()` | strict + `time` + `sys` + `env`（键白名单）+ `sleep_ms` | 需要时间/配置的宿主、CLI 默认档 |
-| `permissive()` | 全部（等效 M5 之前；**仍不含 `fs`**） | 受信场景、兼容性开关、测试 |
-| 自定义 builder | 逐项开关 + 限额（`with_fs_root` 是唯一开启 `fs` 的途径） | 业务按需授权 |
+| `strict()`（`Engine::new()` 默认） | 全局函数 + 迭代器 + 语言特性 + 任务；**无 `sleep_ms`**；模块均需 `import`（D12） | AI 生成代码的默认执行环境 |
+| `standard()` | strict + `sleep_ms`；模块仍均需 `import`（D12，沙箱不再决定模块可见性） | 需要时间/配置的宿主、CLI 默认档 |
+| `permissive()` | 全部 + `sleep_ms`；模块仍均需 `import` | 受信场景、兼容性开关、测试 |
+| 自定义 builder | `with_fs_root` 是唯一开启 `fs`（按根目录注册）的途径；其余模块靠 `import` | 业务按需授权 |
 
 配套：`max_memory_bytes`（T5.3）、`max_wall_clock_ms`（T5.4）、`max_tasks`、`with_fs_root`（T7.5）、
 `NativeModule`/`register_module`（T5.5）、
