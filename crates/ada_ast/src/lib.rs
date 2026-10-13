@@ -264,6 +264,15 @@ pub enum ForVar {
     Tuple(Vec<String>),
 }
 
+/// import 声明的形态（T8.6）：命名空间导入或具名导入。
+#[derive(Debug, Clone, PartialEq)]
+pub enum ImportKind {
+    /// `import name from "path"` —— 绑定整个模块命名空间
+    Namespace(String),
+    /// `import { a, b } from "path"` —— 仅绑定列名的顶层声明
+    Named(Vec<String>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Let {
@@ -307,6 +316,12 @@ pub enum Stmt {
         has_semicolon: bool,
         span: Span,
     },
+    Import {
+        kind: ImportKind,
+        /// 模块路径（相对 `.ada` 文件，或 `std:xxx` 内置模块前缀）
+        path: String,
+        span: Span,
+    },
 }
 
 impl Stmt {
@@ -319,7 +334,8 @@ impl Stmt {
             | Stmt::Return { span, .. }
             | Stmt::Break { span }
             | Stmt::Continue { span }
-            | Stmt::Expr { span, .. } => *span,
+            | Stmt::Expr { span, .. }
+            | Stmt::Import { span, .. } => *span,
         }
     }
 }

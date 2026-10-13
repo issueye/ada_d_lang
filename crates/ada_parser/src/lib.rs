@@ -166,4 +166,64 @@ mod tests {
             panic!("Expected await");
         }
     }
+
+    #[test]
+    fn test_namespace_import() {
+        let code = r#"import json from "std:json""#;
+        let mut parser = Parser::from_source(code).expect("Lex failed");
+        let program = parser.parse_program().expect("Parse failed");
+
+        assert_eq!(program.stmts.len(), 1);
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::Import { kind: ImportKind::Namespace(name), path, .. }
+                if name == "json" && path == "std:json"
+        ));
+    }
+
+    #[test]
+    fn test_named_import() {
+        let code = r#"import { parse, stringify } from "std:json""#;
+        let mut parser = Parser::from_source(code).expect("Lex failed");
+        let program = parser.parse_program().expect("Parse failed");
+
+        assert_eq!(program.stmts.len(), 1);
+        if let Stmt::Import {
+            kind: ImportKind::Named(names),
+            path,
+            ..
+        } = &program.stmts[0]
+        {
+            assert_eq!(names, &vec!["parse".to_string(), "stringify".to_string()]);
+            assert_eq!(path, "std:json");
+        } else {
+            panic!("Expected named import");
+        }
+    }
+
+    #[test]
+    fn test_named_import_from_file() {
+        let code = r#"import { a } from "lib/helpers.ada""#;
+        let mut parser = Parser::from_source(code).expect("Lex failed");
+        let program = parser.parse_program().expect("Parse failed");
+        assert!(matches!(
+            &program.stmts[0],
+            Stmt::Import { kind: ImportKind::Named(names), path, .. }
+                if names == &vec!["a".to_string()] && path == "lib/helpers.ada"
+        ));
+    }
+
+    #[test]
+    fn test_import_without_from_is_error() {
+        let code = r#"import { a } "std:json""#;
+        let mut parser = Parser::from_source(code).expect("Lex failed");
+        assert!(parser.parse_program().is_err());
+    }
+
+    #[test]
+    fn test_import_with_non_string_path_is_error() {
+        let code = r#"import json from json"#;
+        let mut parser = Parser::from_source(code).expect("Lex failed");
+        assert!(parser.parse_program().is_err());
+    }
 }

@@ -34,6 +34,8 @@ pub enum TokenKind {
     Return,
     Break,
     Continue,
+    Import,
+    From,
 
     // Operators & Punctuation
     Plus,             // +
@@ -109,6 +111,8 @@ impl fmt::Display for TokenKind {
             TokenKind::Return => write!(f, "return"),
             TokenKind::Break => write!(f, "break"),
             TokenKind::Continue => write!(f, "continue"),
+            TokenKind::Import => write!(f, "import"),
+            TokenKind::From => write!(f, "from"),
             TokenKind::Plus => write!(f, "+"),
             TokenKind::Minus => write!(f, "-"),
             TokenKind::Star => write!(f, "*"),

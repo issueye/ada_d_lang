@@ -12,7 +12,8 @@ pub use token::{InterpPart, Token, TokenKind};
 pub const KEYWORDS: &[&str] = &[
     // 声明
     "let", "mut", "fn", "async", // 异步
-    "await", "spawn", // 控制流
+    "await", "spawn", // 模块
+    "import", "from", // 控制流
     "if", "else", "match", "while", "for", "in", "return", "ret", "break", "continue",
     // 字面量
     "true", "false", "nil", "null",

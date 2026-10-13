@@ -175,6 +175,7 @@ impl Parser {
                 self.consume_terminator();
                 Ok(Stmt::Continue { span: tok.span })
             }
+            TokenKind::Import => self.parse_import_stmt(),
             _ => self.parse_expr_stmt(),
         }
     }
@@ -220,6 +221,63 @@ impl Parser {
             init,
             span: start_tok.span.merge(end_span),
         })
+    }
+
+    /// 解析 import 声明（T8.6）：
+    /// - `import name from "path"`       —— 命名空间导入
+    /// - `import { a, b } from "path"`   —— 具名导入
+    fn parse_import_stmt(&mut self) -> Result<Stmt, ParseError> {
+        let start_tok = self.advance(); // consume `import`
+
+        let kind = if self.check(&TokenKind::LBrace) {
+            self.advance(); // consume `{`
+            let mut names = Vec::new();
+            if !self.check(&TokenKind::RBrace) {
+                loop {
+                    let name_tok = self.expect_ident("import name")?;
+                    if let TokenKind::Ident(s) = name_tok.kind {
+                        names.push(s);
+                    }
+                    if self.check(&TokenKind::Comma) {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "`}` to close the import list")?;
+            ImportKind::Named(names)
+        } else {
+            let name_tok = self.expect_ident("import name")?;
+            let name = match name_tok.kind {
+                TokenKind::Ident(s) => s,
+                _ => unreachable!(),
+            };
+            ImportKind::Namespace(name)
+        };
+
+        self.expect(TokenKind::From, "`from` after the imported names")?;
+
+        let path_tok = self.peek().clone();
+        let path = match &path_tok.kind {
+            TokenKind::String(s) => {
+                self.advance();
+                s.clone()
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    found: path_tok.kind.to_string(),
+                    expected: "a string literal module path".to_string(),
+                    line: path_tok.span.line,
+                    col: path_tok.span.col,
+                });
+            }
+        };
+
+        let span = start_tok.span.merge(path_tok.span);
+        self.consume_terminator();
+
+        Ok(Stmt::Import { kind, path, span })
     }
 
     fn parse_fn_stmt(&mut self, is_async: bool, start_span: Span) -> Result<Stmt, ParseError> {

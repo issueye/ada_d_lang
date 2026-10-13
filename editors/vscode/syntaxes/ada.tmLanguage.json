@@ -115,7 +115,7 @@
     },
     "keywords": {
       "name": "keyword.control.ada",
-      "match": "\\b(fn|async|await|spawn|let|mut|if|else|match|while|for|in|return|ret|break|continue)\\b"
+      "match": "\\b(fn|async|await|spawn|let|mut|import|from|if|else|match|while|for|in|return|ret|break|continue)\\b"
     },
     "constants": {
       "name": "constant.language.ada",

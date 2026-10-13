@@ -15,6 +15,8 @@ pub enum CompileError {
     AssignToImmutable { name: String, span: Span },
     #[error("`{keyword}` used outside of a loop (only valid inside `while`/`for`)")]
     LoopKeywordOutsideLoop { keyword: String, span: Span },
+    #[error("imports are parsed but not yet resolved (module '{path}')")]
+    ImportUnsupported { path: String, span: Span },
 }
 
 impl CompileError {
@@ -27,7 +29,8 @@ impl CompileError {
             CompileError::VariableNotFound { span, .. }
             | CompileError::InvalidAssignmentTarget { span }
             | CompileError::AssignToImmutable { span, .. }
-            | CompileError::LoopKeywordOutsideLoop { span, .. } => Some(*span),
+            | CompileError::LoopKeywordOutsideLoop { span, .. }
+            | CompileError::ImportUnsupported { span, .. } => Some(*span),
             CompileError::TooManyRegisters => None,
         }
     }
@@ -418,6 +421,13 @@ impl Compiler {
 
     pub fn compile_stmt(&mut self, stmt: &Stmt, dst: Option<Reg>) -> Result<(), CompileError> {
         match stmt {
+            // T8.6：import 语法已就绪；声明合并（T8.8）落地前先给出明确错误。
+            Stmt::Import { path, span, .. } => {
+                return Err(CompileError::ImportUnsupported {
+                    path: path.clone(),
+                    span: *span,
+                });
+            }
             Stmt::Let {
                 name,
                 is_mut,
@@ -1982,6 +1992,7 @@ fn collect_stmt(stmt: &Stmt, in_fn: bool, out: &mut HashSet<String>) {
         }
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Expr { expr, .. } => collect_expr(expr, in_fn, out),
+        Stmt::Import { .. } => {}
     }
 }
 
