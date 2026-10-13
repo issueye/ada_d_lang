@@ -202,7 +202,8 @@ mod tests {
 
     #[test]
     fn test_builtins_json() {
-        let code = r#"
+        let code = r#"import json from "std:json"
+
             let raw = "{\"id\": 101, \"name\": \"Ada\"}"
             let parsed = json.parse(raw)
             assert_eq(parsed.id, 101)
@@ -217,7 +218,8 @@ mod tests {
 
     #[test]
     fn test_builtins_math() {
-        let code = r#"
+        let code = r#"import math from "std:math"
+
             let s = math.sqrt(16.0)
             let p = math.pow(2.0, 3.0)
             assert_eq(s, 4.0)
@@ -230,7 +232,8 @@ mod tests {
 
     #[test]
     fn test_builtins_time() {
-        let code = r#"
+        let code = r#"import time from "std:time"
+
             let start = time.now_ms()
             let secs = time.now_secs()
             let cost = time.elapsed_ms(start)
@@ -245,7 +248,9 @@ mod tests {
 
     #[test]
     fn test_builtins_sys_and_env() {
-        let code = r#"
+        let code = r#"import sys from "std:sys"
+import env from "std:env"
+
             assert_eq(sys.version, "0.1.0")
             let fallback = env.get("NON_EXISTENT_VAR_KEY_XYZ", "default_val")
             assert_eq(fallback, "default_val")

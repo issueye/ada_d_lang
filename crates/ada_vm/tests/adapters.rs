@@ -237,6 +237,8 @@ fn sum_overflow_and_abs_overflow_are_clean_errors() {
 
 #[test]
 fn random_int_over_full_i64_range_does_not_panic() {
-    let value = ok("math.random_int(-9223372036854775807, 9223372036854775807)");
+    let value = ok(
+        "import math from \"std:math\"\nmath.random_int(-9223372036854775807, 9223372036854775807)",
+    );
     assert!(value.as_int().is_some(), "got {value:?}");
 }

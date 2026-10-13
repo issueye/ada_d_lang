@@ -67,7 +67,9 @@ fn builtin_and_module_names_cannot_be_overwritten_by_assignment() {
     }
     // 模块仍然可用
     assert_eq!(
-        engine.eval::<Value>("json.valid(\"{}\")").unwrap(),
+        engine
+            .eval::<Value>("import json from \"std:json\"\njson.valid(\"{}\")")
+            .unwrap(),
         Value::Bool(true)
     );
 
@@ -134,7 +136,9 @@ fn native_modules_and_registered_functions_persist() {
     });
 
     // 模块与宿主函数都可跨轮使用
-    let a: i64 = engine.eval("json.parse(\"[1, 2, 3]\").len").unwrap();
+    let a: i64 = engine
+        .eval("import json from \"std:json\"\njson.parse(\"[1, 2, 3]\").len")
+        .unwrap();
     assert_eq!(a, 3);
     let b: i64 = engine.eval("host_add(40, 2)").unwrap();
     assert_eq!(b, 42);

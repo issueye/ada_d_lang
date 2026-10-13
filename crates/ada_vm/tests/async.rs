@@ -343,7 +343,8 @@ fn tasks_do_not_leak_between_executions() {
 
 #[test]
 fn timeout_cancels_a_slow_task_and_returns_nil() {
-    let code = r#"
+    let code = r#"import time from "std:time"
+
         fn slow() { sleep_ms(400)
             "done" }
         let t = spawn slow()

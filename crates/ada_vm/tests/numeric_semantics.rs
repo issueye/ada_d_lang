@@ -43,17 +43,17 @@ fn non_numeric_arguments_are_rejected() {
         "round(\"x\")",
         "floor(\"x\")",
         "ceil(\"x\")",
-        "math.sqrt(\"x\")",
-        "math.log(\"x\")",
-        "math.log10(\"x\")",
-        "math.sin(\"x\")",
-        "math.cos(\"x\")",
-        "math.tan(\"x\")",
-        "math.pow(\"x\", 2)",
-        "math.pow(2, \"x\")",
-        "math.round(\"x\")",
-        "math.floor(\"x\")",
-        "math.ceil(\"x\")",
+        "import math from \"std:math\"\nmath.sqrt(\"x\")",
+        "import math from \"std:math\"\nmath.log(\"x\")",
+        "import math from \"std:math\"\nmath.log10(\"x\")",
+        "import math from \"std:math\"\nmath.sin(\"x\")",
+        "import math from \"std:math\"\nmath.cos(\"x\")",
+        "import math from \"std:math\"\nmath.tan(\"x\")",
+        "import math from \"std:math\"\nmath.pow(\"x\", 2)",
+        "import math from \"std:math\"\nmath.pow(2, \"x\")",
+        "import math from \"std:math\"\nmath.round(\"x\")",
+        "import math from \"std:math\"\nmath.floor(\"x\")",
+        "import math from \"std:math\"\nmath.ceil(\"x\")",
     ] {
         assert_type_error(source, "string");
     }
@@ -76,8 +76,8 @@ fn missing_arguments_are_rejected() {
         "round()",
         "floor()",
         "ceil()",
-        "math.sqrt()",
-        "math.round()",
+        "import math from \"std:math\"\nmath.sqrt()",
+        "import math from \"std:math\"\nmath.round()",
     ] {
         let err = run(source).unwrap_err();
         let message = err.to_string();
@@ -113,7 +113,10 @@ fn numeric_paths_still_behave_as_before() {
     assert_eq!(ok("sum([])"), Value::Int(0));
     assert_eq!(ok("min([3, 1, 2])"), Value::Int(1));
     assert_eq!(ok("max(3, 1, 2)"), Value::Int(3));
-    assert_eq!(ok("math.sqrt(144.0)"), Value::Float(12.0));
+    assert_eq!(
+        ok("import math from \"std:math\"\nmath.sqrt(144.0)"),
+        Value::Float(12.0)
+    );
     // 空集合仍然是 nil（不是错误）：只有"元素存在但类型不对"才算错误
     assert_eq!(ok("min([])"), Value::Nil);
     assert_eq!(ok("max([])"), Value::Nil);
@@ -122,10 +125,28 @@ fn numeric_paths_still_behave_as_before() {
 #[test]
 fn rounding_functions_are_available_in_both_namespaces() {
     // G-S7：舍入函数此前只在全局命名空间；math.* 别名补齐后两者等价
-    assert_eq!(ok("round(1.6)"), ok("math.round(1.6)"));
-    assert_eq!(ok("floor(1.6)"), ok("math.floor(1.6)"));
-    assert_eq!(ok("ceil(1.2)"), ok("math.ceil(1.2)"));
-    assert_eq!(ok("type_of(math.round)"), Value::string("function"));
-    assert_eq!(ok("type_of(math.floor)"), Value::string("function"));
-    assert_eq!(ok("type_of(math.ceil)"), Value::string("function"));
+    assert_eq!(
+        ok("round(1.6)"),
+        ok("import math from \"std:math\"\nmath.round(1.6)")
+    );
+    assert_eq!(
+        ok("floor(1.6)"),
+        ok("import math from \"std:math\"\nmath.floor(1.6)")
+    );
+    assert_eq!(
+        ok("ceil(1.2)"),
+        ok("import math from \"std:math\"\nmath.ceil(1.2)")
+    );
+    assert_eq!(
+        ok("import math from \"std:math\"\ntype_of(math.round)"),
+        Value::string("function")
+    );
+    assert_eq!(
+        ok("import math from \"std:math\"\ntype_of(math.floor)"),
+        Value::string("function")
+    );
+    assert_eq!(
+        ok("import math from \"std:math\"\ntype_of(math.ceil)"),
+        Value::string("function")
+    );
 }

@@ -216,7 +216,10 @@ fn whole_floats_print_with_a_decimal_point() {
     // 整数不受影响
     assert_eq!(ok("to_str(1)"), Value::string("1"));
     // 超出精确整数范围的浮点沿用科学计数法（不展开成长串）
-    assert_eq!(ok("to_str(math.pow(10.0, 300.0))"), Value::string("1e300"));
+    assert_eq!(
+        ok("import math from \"std:math\"\nto_str(math.pow(10.0, 300.0))"),
+        Value::string("1e300")
+    );
 }
 
 // ============================================================ T3.4 插值定位

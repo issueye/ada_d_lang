@@ -228,7 +228,8 @@ fn captured_variables_do_not_leak_cell_values() {
 
 #[test]
 fn json_round_trip_of_captured_values_is_plain() {
-    let code = r#"
+    let code = r#"import json from "std:json"
+
         let cfg = { retries: 3 }
         let get = () => cfg
         json.stringify(get())

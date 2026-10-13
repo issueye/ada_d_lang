@@ -61,7 +61,12 @@ fn readme_embedding_sandbox_and_module_example() {
         .with_memory_limit(Some(8 * 1024 * 1024))
         .with_wall_clock_limit(Some(2_000));
     let mut engine = Engine::with_sandbox(sandbox);
-    assert!(engine.eval::<i64>("time.now_ms()").unwrap() > 0);
+    assert!(
+        engine
+            .eval::<i64>("import time from \"std:time\"\ntime.now_ms()")
+            .unwrap()
+            > 0
+    );
 
     // 原生模块
     struct Geometry;
@@ -85,7 +90,12 @@ fn readme_embedding_sandbox_and_module_example() {
     assert_eq!(engine.eval::<f64>("geometry.area(3.0, 4.0)").unwrap(), 12.0);
 
     // 受信场景
-    assert!(Engine::permissive().eval::<i64>("time.now_ms()").unwrap() > 0);
+    assert!(
+        Engine::permissive()
+            .eval::<i64>("import time from \"std:time\"\ntime.now_ms()")
+            .unwrap()
+            > 0
+    );
 }
 
 #[test]
@@ -178,18 +188,24 @@ fn spec_language_async_syntax_example() {
 #[test]
 fn spec_stdlib_json_example() {
     let name = eval_string(
-        "let user = json.parse(\"{\\\"id\\\": 101, \\\"name\\\": \\\"Ada\\\", \\\"tags\\\": [\\\"rust\\\"]}\")\nuser.name",
+        "import json from \"std:json\"\nlet user = json.parse(\"{\\\"id\\\": 101, \\\"name\\\": \\\"Ada\\\", \\\"tags\\\": [\\\"rust\\\"]}\")\nuser.name",
     );
     assert_eq!(name, "Ada");
 }
 
 #[test]
 fn spec_stdlib_math_and_time_examples() {
-    assert_eq!(eval_i64("to_int(math.sqrt(256.0))"), 16);
-    assert_eq!(eval_i64("to_int(math.pow(2.0, 8.0))"), 256);
+    assert_eq!(
+        eval_i64("import math from \"std:math\"\nto_int(math.sqrt(256.0))"),
+        16
+    );
+    assert_eq!(
+        eval_i64("import math from \"std:math\"\nto_int(math.pow(2.0, 8.0))"),
+        256
+    );
     // M5：`sys` 属于宿主能力，默认 strict 沙箱不暴露，需显式选择 profile
     let mut engine = Engine::with_sandbox(ada_engine::Sandbox::standard());
-    let os: String = engine.eval("sys.os").unwrap();
+    let os: String = engine.eval("import sys from \"std:sys\"\nsys.os").unwrap();
     assert_eq!(os, std::env::consts::OS);
 }
 
