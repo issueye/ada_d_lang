@@ -391,6 +391,71 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
     globals.insert("timeout".to_string(), async_op(AsyncKind::Timeout));
     // 旧名为 await_race，语义等同 await_any
     globals.insert("await_race".to_string(), async_op(AsyncKind::AwaitAny));
+
+    // -------------------------------------------------------------
+    // 8. 结构化数据辅助（T8.17）：用 map 模拟记录时的深比较 / 快照 / 契约校验
+    // -------------------------------------------------------------
+    globals.insert(
+        "deep_eq".to_string(),
+        Value::native_fn("deep_eq", |args| {
+            let a = args.first().cloned().unwrap_or(Value::Nil);
+            let b = args.get(1).cloned().unwrap_or(Value::Nil);
+            Ok(Value::Bool(deep_eq(&a, &b)))
+        }),
+    );
+
+    globals.insert(
+        "clone".to_string(),
+        Value::native_fn("clone", |args| {
+            let v = args.first().cloned().unwrap_or(Value::Nil);
+            Ok(deep_clone(&v))
+        }),
+    );
+
+    globals.insert(
+        "has_keys".to_string(),
+        Value::native_fn("has_keys", |args| {
+            let (map, keys) = match (args.first(), args.get(1)) {
+                (Some(Value::Map(m)), Some(Value::Array(k))) => (m, k),
+                _ => return Err("has_keys: expected (map, array of keys)".to_string()),
+            };
+            let m = map.read().unwrap();
+            let keys = keys.read().unwrap();
+            let all = keys.iter().all(|k| match k {
+                Value::String(s) => m.contains_key(s.as_str()),
+                _ => false,
+            });
+            Ok(Value::Bool(all))
+        }),
+    );
+
+    globals.insert(
+        "assert_keys".to_string(),
+        Value::native_fn("assert_keys", |args| {
+            let (map, keys) = match (args.first(), args.get(1)) {
+                (Some(Value::Map(m)), Some(Value::Array(k))) => (m, k),
+                _ => return Err("assert_keys: expected (map, array of keys)".to_string()),
+            };
+            let m = map.read().unwrap();
+            let keys = keys.read().unwrap();
+            let mut missing = Vec::new();
+            for k in keys.iter() {
+                match k {
+                    Value::String(s) if !m.contains_key(s.as_str()) => missing.push(s.to_string()),
+                    Value::String(_) => {}
+                    _ => return Err("assert_keys: key names must be strings".to_string()),
+                }
+            }
+            if missing.is_empty() {
+                Ok(Value::Nil)
+            } else {
+                Err(format!(
+                    "assert_keys: map is missing key(s): {}",
+                    missing.join(", ")
+                ))
+            }
+        }),
+    );
 }
 
 /// 注册迭代器适配器（T2.1）为全局函数，使管道形式可用：
@@ -401,6 +466,58 @@ pub fn register_core_globals(globals: &mut HashMap<String, Value>, sandbox: &San
 pub fn register_iterator_adapters(globals: &mut HashMap<String, Value>) {
     for kind in AdapterKind::all() {
         globals.insert(kind.name().to_string(), Value::intrinsic(*kind));
+    }
+}
+
+// ---------------------------------------------------------------- 结构化数据辅助（T8.17）
+
+/// 结构化深比较：数组/映射递归逐元素；标量为值比较；
+/// 函数按实现等价（闭包比原型指针、原生函数比名字）；其它类型不相等。
+fn deep_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Nil, Value::Nil) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
+        (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Closure(x), Value::Closure(y)) => std::sync::Arc::ptr_eq(&x.proto, &y.proto),
+        (Value::NativeFn(x), Value::NativeFn(y)) => x.name == y.name,
+        (Value::Array(x), Value::Array(y)) => {
+            let xs = x.read().unwrap();
+            let ys = y.read().unwrap();
+            xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(m, n)| deep_eq(m, n))
+        }
+        (Value::Map(x), Value::Map(y)) => {
+            let xs = x.read().unwrap();
+            let ys = y.read().unwrap();
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .all(|(k, v)| ys.get(k).is_some_and(|w| deep_eq(v, w)))
+        }
+        _ => false,
+    }
+}
+
+/// 深拷贝：数组/映射递归复制出独立容器；其它值按值克隆。
+fn deep_clone(v: &Value) -> Value {
+    match v {
+        Value::Array(a) => {
+            let items: Vec<Value> = a.read().unwrap().iter().map(deep_clone).collect();
+            Value::array(items)
+        }
+        Value::Map(m) => {
+            let entries: HashMap<String, Value> = m
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), deep_clone(v)))
+                .collect();
+            Value::map(entries)
+        }
+        other => other.clone(),
     }
 }
 

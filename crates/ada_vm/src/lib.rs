@@ -306,4 +306,57 @@ mod tests {
         let res = eval(code).unwrap();
         assert_eq!(res, Value::Bool(true));
     }
+
+    #[test]
+    fn test_deep_eq_compares_records_structurally() {
+        let code = r#"
+            let a = { x: 3, y: 4 }
+            let b = { x: 3, y: 4 }
+            assert_eq(a == b, false)
+            assert_eq(deep_eq(a, b), true)
+            assert_eq(deep_eq(a, { x: 3, y: 5 }), false)
+            assert_eq(deep_eq([1, [2, 3]], [1, [2, 3]]), true)
+            true
+        "#;
+        assert_eq!(eval(code).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_clone_snapshots_records() {
+        let code = r#"
+            mut a = { x: 1 }
+            let b = clone(a)
+            b["x"] = 99
+            assert_eq(a.x, 1)
+            assert_eq(b.x, 99)
+            true
+        "#;
+        assert_eq!(eval(code).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_has_keys_and_assert_keys() {
+        let code = r#"
+            let p = { x: 1, y: 2 }
+            assert_eq(has_keys(p, ["x", "y"]), true)
+            assert_eq(has_keys(p, ["x", "z"]), false)
+            assert_keys(p, ["x", "y"])
+            true
+        "#;
+        assert_eq!(eval(code).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_self_capturing_closure_methods() {
+        let code = r#"
+            fn Point(x, y) = {
+                let self = { x: x, y: y }
+                self["area"] = () => self.x * self.y
+                self
+            }
+            let p = Point(3, 4)
+            p.area()
+        "#;
+        assert_eq!(eval(code).unwrap(), Value::Int(12));
+    }
 }
