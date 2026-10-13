@@ -219,6 +219,7 @@ println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 ```
 
 - `import` 即**完全授权**（D12）：`import env from "std:env"` 后可读**全部**环境变量（`import fs` 仍需宿主根目录）。未导入时模块名不可用。
+- 宿主可用 `Sandbox::with_denied_module("env")` **全局否决**某模块（T8.15）：此时即使 `import` 也报 `CapabilityDenied`；默认不否决。
 - **哈希**（纯计算，任何环境都可用）：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、`crypto.hex(text)`。
 
   ```ada run

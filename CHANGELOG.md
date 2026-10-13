@@ -16,6 +16,12 @@
 
 ### Added
 
+- **宿主全局否决开关（T8.15，D12 安全缓解）**：`Sandbox::with_denied_module(name)` /
+  `with_denied_modules([...])` 允许宿主**全局否决**某个内置模块——即使脚本显式
+  `import X from "std:X"` 也会报 `CapabilityDenied { name, profile }`。
+  这是「导入即授权」（D12）语义下宿主保留的最后防线：**默认空列表**，即维持 D12 现状；
+  未知模块名仍报 `TypeError`，与「被否决」可区分。`Sandbox::module_denied(name)` 可自省。
+
 - **模块导入（T8.6–T8.14）**：新增 `import` 语句。
   - **文件导入**：`import { a, b } from "./lib.ada"`——相对当前文件解析、受 import root 边界约束、
     纯声明合并（不执行被导入文件的顶层副作用）、循环依赖报错；由 `Engine::set_import_root`

@@ -488,6 +488,7 @@ fn main() -> Result<(), ada_engine::Error> {
 | 模块可见性（T8.14，D12） | **所有内置模块默认不注册**；脚本必须 `import X from "std:X"`。`fs` 例外：`with_fs_root` 时按根目录注册 | `builtins::register_all`（仅核心函数）+ VM 执行 `ImportModule`/`ImportNamed` 时调 `builtins::std_module` |
 | 未导入 / 越权 | 未导入时模块名 → `UndefinedGlobal` / `CapabilityDenied`；`sleep_ms` 等仍由沙箱拒绝（`CapabilityDenied { name, profile }`，`ImportModule` 由 VM 执行 | `Instruction::GetGlobal` 拒绝名单 + import 注册 |
 | `env` 读取（D12） | `import env` 即**完全授权**：可读全部键（等价 `create_env_module(None)`）；旧白名单路径保留于 `Sandbox`（供 `register_all` 的历史路径），但默认注册已移除 | `builtins::std_module` |
+| 宿主全局否决（T8.15） | `Sandbox::with_denied_module(name)` / `with_denied_modules([...])` 可**全局否决**某内置模块：即使脚本显式 `import X from "std:X"` 也报 `CapabilityDenied { name, profile }`。**默认空**（维持 D12 现状）。未知模块名仍报 `TypeError`，与「被否决」可区分 | `builtins::std_module`（返回 `StdModule::{Available,Unknown,Denied}`）+ `Vm::resolve_std_module` |
 | 文件系统（T7.5） | **默认无 `fs`**；只有 `Sandbox::with_fs_root(dir)`（CLI：`--fs-root DIR`）才注册，且所有路径被规范化到根目录内（`..`、绝对路径、符号链接、前缀混淆均拒绝），单次 I/O 有字节上限 | `builtins::fs::resolve_within` + 模块注册开关 |
 | 网络 | 未提供任何 API（`http` 明确不做，见决策 D9） | — |
 | 内存 | `MemoryBudget`（近似、共享原子计数器）+ 大对象分配前预检查 | VM 指令 + 原生原型 + 迭代器物化 |

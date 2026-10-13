@@ -476,6 +476,25 @@ impl Vm {
         }
     }
 
+    /// 解析 `import ... from "std:<name>"` 的目标模块（T8.14 / T8.15）。
+    ///
+    /// 区分三种结果，给出可区分的错误（与 `GetGlobal` 路径口径一致）：
+    /// - 未知模块 → `TypeError`（拼写错误等）；
+    /// - 被宿主全局否决 → `CapabilityDenied`（D12 安全缓解，T8.15）；
+    /// - 可用 → 返回模块值。
+    fn resolve_std_module(&self, module: &str) -> Result<Value, VmError> {
+        match crate::builtins::std_module(module, &self.sandbox) {
+            crate::builtins::StdModule::Available(value) => Ok(value),
+            crate::builtins::StdModule::Denied => Err(VmError::CapabilityDenied {
+                name: module.to_string(),
+                profile: self.sandbox.kind.name(),
+            }),
+            crate::builtins::StdModule::Unknown => Err(VmError::TypeError(format!(
+                "cannot import std module '{module}'"
+            ))),
+        }
+    }
+
     /// 已计费的近似内存用量（诊断与测试）。
     pub fn memory_used(&self) -> usize {
         self.budget.used()
@@ -2310,10 +2329,7 @@ impl Vm {
                 } => {
                     let module = self.frames[frame_idx].proto.names[module_idx as usize].clone();
                     let alias = self.frames[frame_idx].proto.names[alias_idx as usize].clone();
-                    let value =
-                        crate::builtins::std_module(&module, &self.sandbox).ok_or_else(|| {
-                            VmError::TypeError(format!("cannot import std module '{module}'"))
-                        })?;
+                    let value = self.resolve_std_module(&module)?;
                     self.globals.insert(alias, value);
                 }
 
@@ -2325,10 +2341,7 @@ impl Vm {
                     let module = self.frames[frame_idx].proto.names[module_idx as usize].clone();
                     let member = self.frames[frame_idx].proto.names[member_idx as usize].clone();
                     let alias = self.frames[frame_idx].proto.names[alias_idx as usize].clone();
-                    let value =
-                        crate::builtins::std_module(&module, &self.sandbox).ok_or_else(|| {
-                            VmError::TypeError(format!("cannot import std module '{module}'"))
-                        })?;
+                    let value = self.resolve_std_module(&module)?;
                     let func = match &value {
                         Value::Map(m) => m.read().unwrap().get(member.as_str()).cloned(),
                         _ => None,

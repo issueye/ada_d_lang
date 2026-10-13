@@ -3,7 +3,7 @@
 //! 覆盖：正常合并、无 root 拒绝、路径逃逸拒绝、文件缺失、具名导出缺失、
 //! 循环依赖、`std:` 暂未支持、顶层副作用不执行。
 
-use ada_engine::{Engine, Error, Value};
+use ada_engine::{Engine, Error, Sandbox, Value, VmError};
 use std::path::{Path, PathBuf};
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -176,4 +176,96 @@ fn imported_top_level_side_effects_are_not_executed() {
     let val = engine.eval_file(&dir.join("main.ada")).unwrap();
     assert_eq!(val.as_int(), Some(7));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- D12 安全缓解（T8.15）
+
+#[test]
+fn denied_module_blocks_std_import_with_capability_denied() {
+    // 宿主全局否决：即使显式 import，也必须被拒绝（D12 安全缓解，T8.15）
+    let mut engine = Engine::with_sandbox(Sandbox::strict().with_denied_module("env"));
+    let err = engine
+        .eval::<Value>("import env from \"std:env\"\nenv.allowed()")
+        .unwrap_err();
+    match err {
+        Error::Vm(VmError::CapabilityDenied { name, profile }) => {
+            assert_eq!(name, "env");
+            assert_eq!(profile, "custom");
+        }
+        other => panic!("expected CapabilityDenied for env, got {other:?}"),
+    }
+}
+
+#[test]
+fn denied_module_blocks_named_import_too() {
+    // 具名导入同样受否决约束
+    let mut engine = Engine::with_sandbox(Sandbox::strict().with_denied_module("json"));
+    let err = engine
+        .eval::<Value>("import { parse } from \"std:json\"\nparse(\"1\")")
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Vm(VmError::CapabilityDenied { ref name, .. }) if name == "json"),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn denied_modules_batch_builder_denies_each() {
+    let mut engine =
+        Engine::with_sandbox(Sandbox::strict().with_denied_modules(["env", "sys", "time"]));
+    for module in ["env", "sys", "time"] {
+        let src = format!("import m from \"std:{module}\"\nm");
+        let err = engine.eval::<Value>(&src).unwrap_err();
+        assert!(
+            matches!(err, Error::Vm(VmError::CapabilityDenied { ref name, .. }) if name == module),
+            "module {module}: got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn denied_module_does_not_affect_other_modules() {
+    // 否决 env 不应影响 json/math 等其它模块
+    let mut engine = Engine::with_sandbox(Sandbox::strict().with_denied_module("env"));
+    let val = engine
+        .eval::<Value>("import math from \"std:math\"\nmath.sqrt(16.0)")
+        .unwrap();
+    assert_eq!(val.as_float(), Some(4.0));
+}
+
+#[test]
+fn unknown_module_is_still_a_type_error_not_denied() {
+    // 拼写错误（未知模块）必须与「被否决」可区分：前者 TypeError，后者 CapabilityDenied
+    let mut engine = Engine::with_sandbox(Sandbox::strict().with_denied_module("env"));
+    let err = engine
+        .eval::<Value>("import x from \"std:nope\"\nx")
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Vm(VmError::TypeError(_))),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn default_sandbox_keeps_d12_import_grants_all() {
+    // 默认（未否决）必须维持 D12 现状：strict 下 import env 仍可读全部键
+    let mut engine = Engine::new();
+    assert!(engine.sandbox().denied_modules.is_empty());
+    let val = engine
+        .eval::<Value>("import env from \"std:env\"\nenv.allowed()")
+        .unwrap();
+    match val {
+        Value::Array(a) => assert_eq!(a.read().unwrap()[0].to_string(), "*"),
+        other => panic!("expected ['*'], got {other:?}"),
+    }
+}
+
+#[test]
+fn denied_module_is_idempotent_and_queryable() {
+    let sandbox = Sandbox::strict()
+        .with_denied_module("env")
+        .with_denied_module("env");
+    assert_eq!(sandbox.denied_modules.len(), 1);
+    assert!(sandbox.module_denied("env"));
+    assert!(!sandbox.module_denied("json"));
 }

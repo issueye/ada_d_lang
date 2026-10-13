@@ -70,6 +70,15 @@ pub struct Sandbox {
     /// 这是 T7.5 的核心安全开关：脚本里的所有路径都被解析并限制在该目录之下，
     /// 既不能用 `..`、也不能用绝对路径或符号链接逃逸（见 `builtins/fs.rs`）。
     pub fs_root: Option<PathBuf>,
+    /// 宿主**全局否决**的内置模块名（D12 安全缓解，T8.15）。
+    ///
+    /// 决策 D12「导入即授权」使 `std:` 导入绕过 profile 的能力开关；本字段是
+    /// 宿主保留的**最后防线**：列在这里的模块名，即使脚本显式
+    /// `import X from "std:X"` 也会被拒绝（`CapabilityDenied`）。
+    ///
+    /// **默认为空**，即维持 D12 现状（导入即可用）。宿主可借此在保留
+    /// 「显式导入」语义的同时，收回对特定模块的最终控制权。
+    pub denied_modules: Vec<String>,
 }
 
 impl Default for Sandbox {
@@ -93,6 +102,7 @@ impl Sandbox {
             max_tasks: Some(128),
             fuel: None,
             fs_root: None,
+            denied_modules: Vec::new(),
         }
     }
 
@@ -110,6 +120,7 @@ impl Sandbox {
             max_tasks: Some(512),
             fuel: None,
             fs_root: None,
+            denied_modules: Vec::new(),
         }
     }
 
@@ -127,6 +138,7 @@ impl Sandbox {
             max_tasks: None,
             fuel: None,
             fs_root: None,
+            denied_modules: Vec::new(),
         }
     }
 
@@ -212,11 +224,41 @@ impl Sandbox {
         self
     }
 
+    /// 全局否决一个内置模块（D12 安全缓解，T8.15）：即使脚本显式
+    /// `import X from "std:X"` 也会被拒绝。
+    ///
+    /// 这是宿主在「导入即授权」语义下保留的最后防线。重复添加同一名字是幂等的。
+    pub fn with_denied_module(mut self, name: impl Into<String>) -> Self {
+        self.kind = ProfileKind::Custom;
+        let name = name.into();
+        if !self.denied_modules.contains(&name) {
+            self.denied_modules.push(name);
+        }
+        self
+    }
+
+    /// 批量全局否决内置模块，语义同 [`Sandbox::with_denied_module`]。
+    pub fn with_denied_modules<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for name in names {
+            self = self.with_denied_module(name);
+        }
+        self
+    }
+
     // ---------------------------------------------------------- 查询
 
     /// 某个环境变量键是否被允许读取（未配置白名单时全部拒绝）。
     pub fn env_key_allowed(&self, key: &str) -> bool {
         self.allow_env && self.env_allowlist.iter().any(|k| k == key)
+    }
+
+    /// 某个内置模块是否被宿主全局否决（D12 安全缓解，T8.15）。
+    pub fn module_denied(&self, name: &str) -> bool {
+        self.denied_modules.iter().any(|m| m == name)
     }
 
     /// 是否暴露某个全局名（用于诊断与测试断言）。

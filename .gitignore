@@ -2,3 +2,5 @@
 # 基准包是独立 workspace（避免 criterion 进入主工作区测试构建），
 # 因此它的构建产物与 criterion 结果需要单独忽略
 /benches/target
+# 本地临时脚手架与一次性日志产物，不进入版本库
+/.tmp_*
