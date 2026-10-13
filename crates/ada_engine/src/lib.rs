@@ -8,7 +8,11 @@ pub use ada_vm::{
     VmError,
 };
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+mod module_loader;
+use module_loader::ModuleLoader;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -26,6 +30,13 @@ pub enum Error {
 
     #[error("Module '{0}' is already registered")]
     ModuleConflict(String),
+
+    #[error("{message}")]
+    Import {
+        message: String,
+        line: usize,
+        col: usize,
+    },
 }
 
 impl Error {
@@ -39,6 +50,10 @@ impl Error {
                 Some(Position { line, col })
             }
             Error::Compile(compile_err) => compile_err.span().map(Position::from_span),
+            Error::Import { line, col, .. } => Some(Position {
+                line: *line,
+                col: *col,
+            }),
             Error::Vm(_) | Error::Conversion(_) | Error::ModuleConflict(_) => None,
         }
     }
@@ -159,6 +174,8 @@ impl FromValue for serde_json::Value {
 
 pub struct Engine {
     vm: Vm,
+    /// 文件 import 的根目录（None 时文件 import 被拒绝；T8.9）
+    import_root: Option<PathBuf>,
 }
 
 impl Default for Engine {
@@ -182,6 +199,7 @@ impl Engine {
     pub fn with_sandbox(sandbox: Sandbox) -> Self {
         Self {
             vm: Vm::with_sandbox(sandbox),
+            import_root: None,
         }
     }
 
@@ -195,9 +213,15 @@ impl Engine {
         self.vm.sandbox()
     }
 
-    /// 重新配置沙箱（会重建全局表，脚本写入的全局会丢失）。
+    /// 配置沙箱（会重建全局表，脚本写入的全局会丢失）。
     pub fn set_sandbox(&mut self, sandbox: Sandbox) {
         self.vm.set_sandbox(sandbox);
+    }
+
+    /// 配置文件 import 的根目录（T8.9）。设置后，`import {{ .. }} from "path"`
+    /// 只能解析到该目录内的文件；未设置时文件 import 一律被拒绝（安全默认）。
+    pub fn set_import_root(&mut self, root: impl Into<PathBuf>) {
+        self.import_root = Some(root.into());
     }
 
     /// 本次求值已计费的近似内存字节数（M5 / T5.3）。
@@ -311,6 +335,69 @@ impl Engine {
     pub fn eval<T: FromValue>(&mut self, source: &str) -> Result<T, Error> {
         let val = self.eval_value(source)?;
         T::from_value(val)
+    }
+
+    /// 求值一个脚本文件，并解析其中的相对 import（T8.7）。
+    ///
+    /// 与 [`Engine::eval_diagnostic`] 的区别：本方法知道**当前文件路径**，
+    /// 因此 `import {{ a }} from "./lib.ada"` 可相对该文件解析；文件 import
+    /// 受 [`Engine::set_import_root`] 的 root 边界约束。
+    pub fn eval_file_diagnostic(&mut self, path: &Path) -> Result<Value, EvalFailure> {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(EvalFailure {
+                    error: Error::Conversion(format!("cannot read {}: {e}", path.display())),
+                    position: None,
+                });
+            }
+        };
+        let parsed = Parser::from_source(&source).and_then(|mut parser| parser.parse_program());
+        let program = match parsed {
+            Ok(program) => program,
+            Err(err) => {
+                let (line, col) = err.position();
+                return Err(EvalFailure {
+                    error: Error::Parse(err),
+                    position: Some(Position { line, col }),
+                });
+            }
+        };
+        let current_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut loader = ModuleLoader::new(self.import_root.clone());
+        let merged = match loader.resolve(program, current_dir) {
+            Ok(p) => p,
+            Err(err) => {
+                return Err(EvalFailure {
+                    position: err.position(),
+                    error: err,
+                });
+            }
+        };
+        let proto = match Compiler::compile_program(&merged) {
+            Ok(proto) => proto,
+            Err(err) => {
+                return Err(EvalFailure {
+                    position: err.span().map(Position::from_span),
+                    error: Error::Compile(err),
+                });
+            }
+        };
+        match self.vm.execute(proto) {
+            Ok(val) => Ok(val),
+            Err(err) => {
+                let position = self.vm.last_error_span().map(Position::from_span);
+                Err(EvalFailure {
+                    error: Error::Vm(err),
+                    position,
+                })
+            }
+        }
+    }
+
+    /// [`Engine::eval_file_diagnostic`] 的便捷版本（丢弃位置）。
+    pub fn eval_file(&mut self, path: &Path) -> Result<Value, Error> {
+        self.eval_file_diagnostic(path).map_err(|f| f.error)
     }
 
     /// **静态检查**：只做词法 / 语法 / 编译检查，**不执行**脚本（T7.2）。

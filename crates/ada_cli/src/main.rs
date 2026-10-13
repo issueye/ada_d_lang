@@ -5,7 +5,7 @@ use clap::{Parser as ClapParser, Subcommand};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(ClapParser)]
 #[command(
@@ -33,6 +33,10 @@ struct Cli {
     /// Expose the `fs` module, restricted to this directory (T7.5)
     #[arg(long = "fs-root", global = true, value_name = "DIR")]
     fs_root: Option<PathBuf>,
+
+    /// Allow file imports, restricted to this directory (T8.9)
+    #[arg(long = "import-root", global = true, value_name = "DIR")]
+    import_root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -93,14 +97,14 @@ fn dispatch(cli: &Cli, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Erro
     }
 
     match &cli.command {
-        Some(Commands::Run { file }) => run_file(file, sandbox),
+        Some(Commands::Run { file }) => run_file(file, sandbox, cli.import_root.as_deref()),
         Some(Commands::Eval { code }) => run_code(code, sandbox),
         Some(Commands::Dump { file }) => dump_bytecode(file),
         Some(Commands::Check { file }) => check_file(file),
         Some(Commands::Repl) => run_repl(sandbox),
         None => {
             if let Some(file) = &cli.file {
-                run_file(file, sandbox)
+                run_file(file, sandbox, cli.import_root.as_deref())
             } else {
                 run_repl(sandbox)
             }
@@ -158,6 +162,7 @@ fn render_detail(err: &ada_engine::Error) -> String {
         ada_engine::Error::ModuleConflict(name) => {
             format!("module '{name}' is already registered")
         }
+        ada_engine::Error::Import { message, .. } => message.clone(),
     }
 }
 
@@ -185,9 +190,20 @@ fn strip_position(text: &str) -> String {
     }
 }
 
-fn run_file(path: &PathBuf, sandbox: &Sandbox) -> Result<(), Box<dyn std::error::Error>> {
-    let source = fs::read_to_string(path)?;
-    run_code(&source, sandbox)?;
+fn run_file(
+    path: &Path,
+    sandbox: &Sandbox,
+    import_root: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // T8.7：走带文件路径的求值入口，使相对 import 可解析
+    let mut engine = Engine::with_sandbox(sandbox.clone());
+    if let Some(root) = import_root {
+        engine.set_import_root(root.to_path_buf());
+    }
+    let val = engine.eval_file_diagnostic(path)?;
+    if !val.is_nil() {
+        println!("{val}");
+    }
     Ok(())
 }
 
