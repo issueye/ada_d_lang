@@ -275,6 +275,26 @@ let v = { let a = 1
     a + 1 }             // 块：v == 2
 ```
 
+### 5.7 模块导入 (import)
+
+`import` 引入**内置模块**或**文件模块**（T8.6–T8.14）。两种形式：
+
+```ada
+import json from "std:json"                     // 命名空间：之后用 json.parse(...)
+import { parse, stringify } from "std:json"    // 具名：之后直接用 parse(...)
+import { area } from "./geometry.ada"          // 文件导入（相对当前文件）
+```
+
+| 特性 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `std:` 内置模块 | ✅ | `json`/`math`/`crypto`/`time`/`sys`/`env`/`fs`；**必须显式导入**（见 [SPEC_STDLIB §7](SPEC_STDLIB.md)） |
+| 文件导入 | ✅ | 相对当前文件、受 import root 边界约束；纯声明合并（不执行顶层副作用）；循环依赖报错 |
+| 导入绑定 | ✅ | 只读（不可再赋值）；具名导入会校验该导出存在 |
+| 未知模块 / 缺失导出 | ✅ | `std:` 为运行期 `VmError`；文件缺失/越界为编译期错误 |
+
+> ⚠️ **安全（决策 D12）**：`std:` 导入即**完全授权**，绕过沙箱 profile 的模块开关
+> （如 `import env` 后可读全部环境变量）；但内存/墙钟预算仍然生效。`fs` 例外：仍需宿主提供根目录。
+
 ---
 
 ## 6. 闭包 (Closures)

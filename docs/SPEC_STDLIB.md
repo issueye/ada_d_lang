@@ -11,14 +11,17 @@
 
 1. **Token 优先**：函数名短、语义自明（`len`、`sum`、`abs`），优先链式与属性式调用（`arr.len`、`s.trim()`）。
 2. **双入口一致**：同一能力尽量同时提供**全局函数**（可被 `|>` 管道调用）与**原型方法**（可链式），例如 `sum(arr)` 与 `arr.sum()`。
-3. **权限分级**：纯计算（`json`/`math`/原型方法）默认开启；时间、环境变量等宿主能力须经 `SandboxProfile` 显式授权（当前尚未分级，见 [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型)）。
+3. **模块导入与授权**（T8.14，决策 D12）：原生模块必须在脚本里**显式导入**才可见；`std:` 导入即**完全授权**（`import env` 后可读全部环境变量），沙箱 profile 不再决定模块可见性，但内存/墙钟预算仍生效（见 [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型)）。
 4. **零成本对齐 Rust**：底层为原生实现，不做多余序列化（`json` 除外）。
 
 ---
 
 ## 2. 全局内置函数
 
-所有内置函数在 VM 初始化时注入全局作用域，无需 import，任何作用域可直接调用。
+所有**全局内置函数**在 VM 初始化时注入全局作用域，**无需 import**，任何作用域可直接调用。
+
+> ⚠️ 注意：**原生模块**（`json`/`math`/`crypto`/`time`/`sys`/`env`/`fs`）**必须显式导入**（T8.14，决策 D12），
+> 例如 `import json from "std:json"`；详见 §3。
 
 ### 2.1 I/O 与调试 ✅
 
@@ -91,6 +94,11 @@
 ## 3. 原生模块 (Native Modules)
 
 模块是 `map` 值，属性访问即取成员，支持 `json.parse(...)` 形式调用。
+
+> ⚠️ **必须显式导入**（T8.14，决策 D12）：
+> `import json from "std:json"`（命名空间，之后用 `json.parse`）或 `import { parse } from "std:json"`（具名）。
+> 未导入时模块名不可用；`std:` 导入即**完全授权**（`fs` 例外：仍需宿主根目录），
+> 见 [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型)。
 
 ### 3.1 `json` ✅
 
@@ -390,3 +398,44 @@ engine.register_module(MyToolModule::new());
 | G-S11 | `NativeModule` 与模块注册接口不存在 | ✅ 已修复（M5）：`NativeModule` trait + `Engine::register_module`（冲突报 `ModuleConflict`） | ✅ T5.5 |
 | G-S12 | 适配器结果为即时求值（非惰性），大区间会先物化 | ⚠️ 已按决策 D3 = A 记录 | 后续评估惰性链 |
 | G-S13 | map 上 `len`/`keys` 等原型方法名遮蔽同名键（`{len: 9}.len` → `1`） | ✅ 已修复（T7.5）：统一为**自有键优先**，与 `m["len"]` 一致；`fs.remove` 被遮蔽的真实缺陷促成了该决定（见 §4.4） | ✅ T7.5 |
+
+---
+
+## 9. 结构化数据惯用法（struct-like，T8.18）
+
+Ada-D 没有 `struct`/`class` 关键字（§9 非目标）——用 `map` 承担"记录/对象"角色，配以下惯例：
+
+```ada
+// 构造函数（map 简写：键取同名变量值）
+fn Point(x, y) = {
+    let self = { x: x, y: y }
+    self["area"] = () => self.x * self.y   // 方法 = 捕获 self 的闭包
+    self
+}
+let p = Point(3, 4)
+p.x                       // 3
+p.area()                  // 12 —— 自引用闭包方法
+p?.y ?? 0                 // 安全访问
+
+// 深比较（`==` 是引用比较）
+deep_eq(Point(3, 4), Point(3, 4))   // true
+
+// 快照（clone 深拷贝出独立容器）
+let q = clone(p)
+q["x"] = 99               // 不影响 p
+
+// 契约校验
+has_keys(p, ["x", "y"])            // true
+assert_keys(p, ["x", "y"])         // 缺键报错
+```
+
+| 辅助 | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `fn Name(...) = { ... }` | ✅ | 构造函数约定，返回 `map` |
+| `self["m"] = () => ...` | ✅ | "方法"：捕获 `self` 的闭包，`p.m()` 自然派发 |
+| `p |> free_fn()` | ✅ | 自由函数 + 管道，等价于方法调用的观感 |
+| `deep_eq(a, b)` | ✅ | 结构化深比较（T8.17） |
+| `clone(v)` | ✅ | 深拷贝（T8.17） |
+| `has_keys` / `assert_keys` | ✅ | 键契约校验（T8.17） |
+
+**限制**（继承自 `map`）：无静态类型/字段声明；`==` 为引用比较（用 `deep_eq`）；键顺序不保证；方法**每实例一份**闭包（不共享）。VM 层的"方法派发 / `self` 自动注入"（方案 2）留作后续评估。

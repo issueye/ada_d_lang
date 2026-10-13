@@ -204,8 +204,9 @@ println([1, 2, 3, 4].map(x => x * 10).filter(x => x > 20).collect())
 
 | 环境 | 默认允许 |
 | :--- | :--- |
-| CLI（`ada`，本地受信） | `time`、`sys`、`env`（**空白名单**）、`sleep_ms`、`crypto`；`fs` 需 `--fs-root DIR` |
-| Rust 宿主 `Engine::new()` | **只有纯计算 + `json` + `math` + `crypto`**（strict） |
+| 任何环境 | **全局函数**与迭代器适配器；**模块全部需显式 `import`**（T8.14，决策 D12） |
+| CLI（`ada`，本地受信） | 额外提供 `sleep_ms`；`fs` 需 `--fs-root DIR` |
+| Rust 宿主 `Engine::new()` | 不提供 `sleep_ms`（strict）；模块同样需 `import` |
 
 ```ada run
 import json from "std:json"
@@ -217,7 +218,7 @@ println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 1|true|12.0
 ```
 
-- 在 strict 下访问 `time`/`env`/`sys`/`sleep_ms`/`fs` 会报 `CapabilityDenied`（而不是"未定义"）。
+- `import` 即**完全授权**（D12）：`import env from "std:env"` 后可读**全部**环境变量（`import fs` 仍需宿主根目录）。未导入时模块名不可用。
 - **哈希**（纯计算，任何环境都可用）：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、`crypto.hex(text)`。
 
   ```ada run

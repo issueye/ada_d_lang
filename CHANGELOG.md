@@ -5,7 +5,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **破坏性：内置模块改为必须显式导入（T8.14，决策 D12）。** `json`/`math`/`crypto`/`time`/`sys`/`env`
+  不再默认注册；脚本必须 `import json from "std:json"`（命名空间）或 `import { sqrt } from "std:math"`（具名）才能使用。
+  `fs` 例外：宿主提供 `--fs-root` / `Sandbox::with_fs_root` 时按根目录注册（根即授权），也支持 `import fs`。
+  沙箱 profile 不再决定模块可见性；`std:` 导入即**完全授权**（D12），但引擎的内存/墙钟预算仍然生效。
+  - ⚠️ **安全影响**：`import` 会授予模块的完整能力（如 `import env` 后可读**全部**环境变量），
+    绕过了原先的 env 键白名单；旧代码若依赖"沙箱自动提供模块"，迁移时需加 `import`。
+
 ### Added
+
+- **模块导入（T8.6–T8.14）**：新增 `import` 语句。
+  - **文件导入**：`import { a, b } from "./lib.ada"`——相对当前文件解析、受 import root 边界约束、
+    纯声明合并（不执行被导入文件的顶层副作用）、循环依赖报错；由 `Engine::set_import_root`
+    或 CLI `--import-root` 启用，**默认拒绝**。
+  - **内置模块导入**：`import json from "std:json"` / `import { sqrt } from "std:math"`——编译为
+    `ImportModule` / `ImportNamed` 指令、由 VM 注册，因此 `Engine` 与裸 `Vm` 两条路径都可用。
+- **结构化数据辅助（T8.17）**：新增全局函数 `deep_eq`（结构化深比较，区别于 `==` 的引用比较）、
+  `clone`（深拷贝出独立容器）、`has_keys` / `assert_keys`（记录键契约校验），
+  配合 `map` + 自引用闭包模拟"结构体/对象"。
 
 - **方法分派缓存（T6.8）**：`GetField` 过去每访问一次方法（`xs.push`、`s.trim`…）都要新建一个
   捕获接收者的 `NativeFn`（实验测得 debug 下约 410 ns/次）。现在按「字段名 → (接收者, 闭包)」
