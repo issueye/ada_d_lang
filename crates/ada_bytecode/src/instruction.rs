@@ -212,6 +212,18 @@ pub enum Instruction {
         kind: GlobalWrite,
     },
 
+    /// 导入内置模块（命名空间形式，T8.14）：把 `std:<module>` 的模块表注册为全局 `alias`。
+    ImportModule {
+        module_idx: u32,
+        alias_idx: u32,
+    },
+    /// 导入内置模块的单个成员（具名形式，T8.14）：把 `module.name` 绑定为全局 `alias`。
+    ImportNamed {
+        module_idx: u32,
+        member_idx: u32,
+        alias_idx: u32,
+    },
+
     /// 与 **i32 常量**的二元运算（T6.6 指令融合）：`dst = src <op> value`。
     ///
     /// 编译器把 `x + 2` / `i % 2 == 0` 这类"一侧是整数字面量"的表达式直接编成一条

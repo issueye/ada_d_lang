@@ -2304,6 +2304,41 @@ impl Vm {
                     self.globals.insert(name, val);
                 }
 
+                Instruction::ImportModule {
+                    module_idx,
+                    alias_idx,
+                } => {
+                    let module = self.frames[frame_idx].proto.names[module_idx as usize].clone();
+                    let alias = self.frames[frame_idx].proto.names[alias_idx as usize].clone();
+                    let value =
+                        crate::builtins::std_module(&module, &self.sandbox).ok_or_else(|| {
+                            VmError::TypeError(format!("cannot import std module '{module}'"))
+                        })?;
+                    self.globals.insert(alias, value);
+                }
+
+                Instruction::ImportNamed {
+                    module_idx,
+                    member_idx,
+                    alias_idx,
+                } => {
+                    let module = self.frames[frame_idx].proto.names[module_idx as usize].clone();
+                    let member = self.frames[frame_idx].proto.names[member_idx as usize].clone();
+                    let alias = self.frames[frame_idx].proto.names[alias_idx as usize].clone();
+                    let value =
+                        crate::builtins::std_module(&module, &self.sandbox).ok_or_else(|| {
+                            VmError::TypeError(format!("cannot import std module '{module}'"))
+                        })?;
+                    let func = match &value {
+                        Value::Map(m) => m.read().unwrap().get(member.as_str()).cloned(),
+                        _ => None,
+                    }
+                    .ok_or_else(|| {
+                        VmError::TypeError(format!("std module '{module}' has no '{member}'"))
+                    })?;
+                    self.globals.insert(alias, func);
+                }
+
                 Instruction::NewArray { dst, start, count } => {
                     // M5：物化前预检查，避免"先分配再报错"
                     self.ensure_items_fit(count as usize)?;

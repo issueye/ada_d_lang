@@ -47,3 +47,21 @@ pub fn register_all(globals: &mut HashMap<String, Value>, sandbox: &Sandbox) {
         );
     }
 }
+
+/// 构造一个内置模块值，供 `import ... from "std:<name>"` 在 VM 层注册（T8.14）。
+///
+/// 「导入即授权」（决策 D12）：以 permissive 构造，不受引擎 profile 限制。
+/// 返回 `None` 表示未知模块；`fs` 需要宿主提供根目录，无根时同样返回 `None`。
+pub fn std_module(name: &str, sandbox: &Sandbox) -> Option<Value> {
+    let permissive = Sandbox::permissive();
+    Some(match name {
+        "json" => json::create_json_module(&permissive),
+        "math" => math::create_math_module(),
+        "crypto" => crypto::create_crypto_module(),
+        "time" => time::create_time_module(),
+        "sys" => sys::create_sys_module(),
+        "env" => sys::create_env_module(None),
+        "fs" => fs::create_fs_module(sandbox.fs_root.clone()?, None),
+        _ => return None,
+    })
+}

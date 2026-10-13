@@ -421,12 +421,45 @@ impl Compiler {
 
     pub fn compile_stmt(&mut self, stmt: &Stmt, dst: Option<Reg>) -> Result<(), CompileError> {
         match stmt {
-            // T8.6：import 语法已就绪；声明合并（T8.8）落地前先给出明确错误。
-            Stmt::Import { path, span, .. } => {
-                return Err(CompileError::ImportUnsupported {
-                    path: path.clone(),
-                    span: *span,
-                });
+            Stmt::Import { kind, path, span } => {
+                if let Some(module) = path.strip_prefix("std:") {
+                    // T8.14：`std:` 导入编译为运行时指令，由 VM 注册模块，
+                    // 因此 Engine 与裸用 Vm 两条路径都可用。
+                    match kind {
+                        ImportKind::Namespace(alias) => {
+                            let module_idx = self.proto.add_name(module);
+                            let alias_idx = self.proto.add_name(alias.as_str());
+                            self.proto.emit(
+                                Instruction::ImportModule {
+                                    module_idx,
+                                    alias_idx,
+                                },
+                                *span,
+                            );
+                        }
+                        ImportKind::Named(names) => {
+                            let module_idx = self.proto.add_name(module);
+                            for name in names {
+                                let member_idx = self.proto.add_name(name.as_str());
+                                let alias_idx = self.proto.add_name(name.as_str());
+                                self.proto.emit(
+                                    Instruction::ImportNamed {
+                                        module_idx,
+                                        member_idx,
+                                        alias_idx,
+                                    },
+                                    *span,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    // 文件 import 需要文件系统上下文，由 Engine 在编译前解析（T8.8）。
+                    return Err(CompileError::ImportUnsupported {
+                        path: path.clone(),
+                        span: *span,
+                    });
+                }
             }
             Stmt::Let {
                 name,

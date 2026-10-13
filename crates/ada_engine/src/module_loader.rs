@@ -69,8 +69,12 @@ impl ModuleLoader {
         }
 
         for stmt in program.stmts {
-            if !matches!(stmt, Stmt::Import { .. }) {
-                merged.push(stmt);
+            match &stmt {
+                // `std:` 导入保留给编译器生成注册指令（T8.14）
+                Stmt::Import { path, .. } if path.starts_with("std:") => merged.push(stmt),
+                // 文件 import 已被展开
+                Stmt::Import { .. } => {}
+                _ => merged.push(stmt),
             }
         }
 
@@ -132,8 +136,15 @@ impl ModuleLoader {
         let resolved = self.resolve(program, &dir)?;
         self.loading.remove(&canonical);
 
-        // 纯声明合并：只保留顶层声明，丢弃顶层副作用（表达式语句等）
-        let decls: Vec<Stmt> = resolved.stmts.into_iter().filter(is_declaration).collect();
+        // 纯声明合并：只保留顶层声明（以及 `std:` 导入），丢弃顶层副作用等
+        let decls: Vec<Stmt> = resolved
+            .stmts
+            .into_iter()
+            .filter(|s| {
+                is_declaration(s)
+                    || matches!(s, Stmt::Import { path, .. } if path.starts_with("std:"))
+            })
+            .collect();
         self.cache.insert(canonical, decls.clone());
         Ok(decls)
     }

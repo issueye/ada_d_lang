@@ -127,11 +127,12 @@ sqrt(16.0)"#;
 
 #[test]
 fn std_named_import_of_missing_export_errors() {
+    // `std:` 导入由 VM 在运行期注册，缺失导出表现为 VmError（T8.14）
     let mut engine = Engine::new();
     let err = engine
         .eval::<Value>("import { nope } from \"std:json\"\nnope")
         .unwrap_err();
-    assert!(matches!(err, Error::Import { .. }), "got {err:?}");
+    assert!(matches!(err, Error::Vm(_)), "got {err:?}");
 }
 
 #[test]
@@ -140,7 +141,7 @@ fn unknown_std_module_errors() {
     let err = engine
         .eval::<Value>("import x from \"std:nope\"\nx")
         .unwrap_err();
-    assert!(matches!(err, Error::Import { .. }), "got {err:?}");
+    assert!(matches!(err, Error::Vm(_)), "got {err:?}");
 }
 
 #[test]
