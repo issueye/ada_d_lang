@@ -56,8 +56,8 @@ fn immutability_is_enforced_within_and_across_evaluations() {
 #[test]
 fn builtin_and_module_names_cannot_be_overwritten_by_assignment() {
     let mut engine = Engine::new();
-    // 此前 `json = 1` / `len = 1` 会静默把模块与内建函数换掉
-    for source in ["json = 1", "len = 1", "println = 1"] {
+    // D12：模块不再预注册（`json` 在 import 前是自由名）；只有核心内建函数受保护
+    for source in ["len = 1", "println = 1"] {
         let err = engine.eval::<Value>(source).unwrap_err();
         assert!(
             matches!(&err, Error::Vm(VmError::TypeError(msg))

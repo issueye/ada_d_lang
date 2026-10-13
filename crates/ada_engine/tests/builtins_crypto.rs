@@ -103,14 +103,19 @@ fn hex_encodes_utf8_bytes() {
 
 #[test]
 fn crypto_is_a_pure_computation_module_available_in_every_profile() {
-    // 不涉及宿主能力：三档 profile 都注册（与 json/math 同级）
+    // 决策 D12：内置模块必须显式导入；crypto 为纯计算，导入后三档 profile 都可用
     for sandbox in [
         Sandbox::strict(),
         Sandbox::standard(),
         Sandbox::permissive(),
     ] {
         let mut engine = Engine::with_sandbox(sandbox.clone());
-        assert_eq!(engine.eval::<String>("type_of(crypto)").unwrap(), "map");
+        assert_eq!(
+            engine
+                .eval::<String>("import crypto from \"std:crypto\"\ntype_of(crypto)")
+                .unwrap(),
+            "map"
+        );
         assert_eq!(
             engine
                 .eval::<String>("import crypto from \"std:crypto\"\ncrypto.sha256(\"abc\")")

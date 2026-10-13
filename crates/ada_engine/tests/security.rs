@@ -77,11 +77,13 @@ fn strict_still_allows_pure_computation() {
     assert_eq!(value, 35);
 
     let json: String = engine
-        .eval("json.stringify(json.parse(\"[1, 2, 3]\"))")
+        .eval("import json from \"std:json\"\njson.stringify(json.parse(\"[1, 2, 3]\"))")
         .unwrap();
     assert_eq!(json, "[1,2,3]");
 
-    let math: i64 = engine.eval("to_int(math.sqrt(144.0))").unwrap();
+    let math: i64 = engine
+        .eval("import math from \"std:math\"\nto_int(math.sqrt(144.0))")
+        .unwrap();
     assert_eq!(math, 12);
 
     // 任务调度是纯计算能力，strict 下可用（没有 sleep_ms，但 yield_now/await 可用）
@@ -115,9 +117,17 @@ fn sandbox_profile_is_reported() {
 #[test]
 fn standard_profile_exposes_time_and_sys() {
     let mut engine = Engine::with_sandbox(Sandbox::standard());
-    assert!(engine.eval::<i64>("time.now_ms()").unwrap() > 0);
+    // D12：模块需显式导入（`std:` 导入即授权）
+    assert!(
+        engine
+            .eval::<i64>("import time from \"std:time\"\ntime.now_ms()")
+            .unwrap()
+            > 0
+    );
     assert_eq!(
-        engine.eval::<String>("sys.os").unwrap(),
+        engine
+            .eval::<String>("import sys from \"std:sys\"\nsys.os")
+            .unwrap(),
         std::env::consts::OS
     );
     assert!(engine.eval::<i64>("sleep_ms(1)").unwrap_or(0) == 0);
@@ -126,59 +136,27 @@ fn standard_profile_exposes_time_and_sys() {
 // ==================================================== T5.2 env 白名单
 
 #[test]
-fn env_whitelist_allows_only_listed_keys_and_never_reads_the_host_for_others() {
-    // PATH 在宿主上一定存在：用它证明"未授权键根本没读宿主环境"
+fn env_requires_import_and_then_reads_all_keys() {
+    // D12：模块必须显式导入；`import env` 即完全授权（可读全部键）
     assert!(std::env::var("PATH").is_ok(), "test precondition");
 
-    let sandbox = Sandbox::strict().with_env_keys(["PATH"]);
-    let mut engine = Engine::with_sandbox(sandbox);
+    let mut engine = Engine::with_sandbox(Sandbox::strict());
+    // 未导入：env 不可用
+    assert!(matches!(
+        eval_err(&mut engine, "env.get(\"PATH\")"),
+        Error::Vm(_)
+    ));
 
-    // 白名单内的键：与宿主一致
-    let path: String = engine.eval("env.get(\"PATH\")").unwrap();
+    // 导入后：完全授权
+    let path: String = engine
+        .eval("import env from \"std:env\"\nenv.get(\"PATH\")")
+        .unwrap();
     assert_eq!(path, std::env::var("PATH").unwrap());
-    assert!(engine.eval::<bool>("env.has(\"PATH\")").unwrap());
-
-    // 白名单外的键：即使宿主存在也只能拿到 nil / false
     assert_eq!(
         engine
-            .eval::<Value>("env.get(\"PATH_EXTRA_UNLISTED\")")
+            .eval::<String>("import env from \"std:env\"\nenv.allowed() |> join(\",\")")
             .unwrap(),
-        Value::Nil
-    );
-    assert!(engine.eval::<bool>("env.has(\"PATH\")").unwrap());
-    assert!(!engine.eval::<bool>("env.has(\"UNLISTED_KEY\")").unwrap());
-
-    // 允许宿主给默认值
-    assert_eq!(
-        engine
-            .eval::<String>("env.get(\"UNLISTED_KEY\", \"fallback\")")
-            .unwrap(),
-        "fallback"
-    );
-
-    // 白名单可被脚本自省
-    assert_eq!(
-        engine
-            .eval::<String>("env.allowed() |> join(\",\")")
-            .unwrap(),
-        "PATH"
-    );
-}
-
-#[test]
-fn env_module_with_an_empty_whitelist_reads_nothing() {
-    let sandbox = Sandbox::permissive().with_env_keys(Vec::<String>::new());
-    let mut engine = Engine::with_sandbox(sandbox);
-    assert!(std::env::var("PATH").is_ok());
-    assert_eq!(
-        engine.eval::<Value>("env.get(\"PATH\")").unwrap(),
-        Value::Nil
-    );
-    assert_eq!(
-        engine
-            .eval::<String>("env.allowed() |> join(\",\")")
-            .unwrap(),
-        ""
+        "*"
     );
 }
 
@@ -239,7 +217,7 @@ fn memory_limit_also_caps_json_input() {
     let sandbox = Sandbox::strict().with_memory_limit(Some(1024));
     let mut engine = Engine::with_sandbox(sandbox);
     let big = "1".repeat(4096);
-    let source = format!("json.parse(\"{big}\")");
+    let source = format!("import json from \"std:json\"\njson.parse(\"{big}\")");
     match eval_err(&mut engine, &source) {
         Error::Vm(VmError::NativeError(msg)) => {
             assert!(msg.contains("memory budget"), "message: {msg}");
@@ -404,7 +382,8 @@ fn custom_native_module_is_callable_and_conflicts_are_rejected() {
         Err(Error::ModuleConflict(name)) => assert_eq!(name, "geometry"),
         other => panic!("expected ModuleConflict, got {other:?}"),
     }
-    // 也不能覆盖内置模块（否则脚本会以为自己在用标准库）
+    // D12：内置模块不再预注册，因此 `math` 不是保留名——宿主可注入同名模块
+    // （脚本侧需显式 `import math from "std:math"`，与宿主模块互不影响）
     struct MathShadow;
     impl NativeModule for MathShadow {
         fn name(&self) -> &str {
@@ -414,10 +393,7 @@ fn custom_native_module_is_callable_and_conflicts_are_rejected() {
             vec![("sqrt".to_string(), Arc::new(|_| Ok(Value::Int(0))))]
         }
     }
-    assert!(matches!(
-        engine.register_module(MathShadow),
-        Err(Error::ModuleConflict(_))
-    ));
+    assert!(engine.register_module(MathShadow).is_ok());
 }
 
 // ==================================================== 宿主健壮性
@@ -458,9 +434,17 @@ fn hostile_scripts_return_errors_instead_of_panicking_the_host() {
 fn permissive_profile_preserves_pre_m5_behaviour() {
     // 兼容性检查：不设限时旧的宿主能力仍全部可用
     let mut engine = Engine::permissive();
-    assert!(engine.eval::<i64>("time.now_ms()").unwrap() > 0);
+    // D12：模块需显式导入
+    assert!(
+        engine
+            .eval::<i64>("import time from \"std:time\"\ntime.now_ms()")
+            .unwrap()
+            > 0
+    );
     assert_eq!(
-        engine.eval::<String>("sys.os").unwrap(),
+        engine
+            .eval::<String>("import sys from \"std:sys\"\nsys.os")
+            .unwrap(),
         std::env::consts::OS
     );
     assert_eq!(engine.eval::<Value>("sleep_ms(1)").unwrap(), Value::Nil);

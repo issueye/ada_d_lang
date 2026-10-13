@@ -208,6 +208,8 @@ println([1, 2, 3, 4].map(x => x * 10).filter(x => x > 20).collect())
 | Rust 宿主 `Engine::new()` | **只有纯计算 + `json` + `math` + `crypto`**（strict） |
 
 ```ada run
+import json from "std:json"
+import math from "std:math"
 println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 ```
 
@@ -219,6 +221,7 @@ println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 - **哈希**（纯计算，任何环境都可用）：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、`crypto.hex(text)`。
 
   ```ada run
+import crypto from "std:crypto"
   println(crypto.sha256("abc"))
   ```
 
