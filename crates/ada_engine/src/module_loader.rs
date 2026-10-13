@@ -46,11 +46,9 @@ impl ModuleLoader {
 
         for stmt in &program.stmts {
             if let Stmt::Import { kind, path, span } = stmt {
-                if let Some(module) = path.strip_prefix("std:") {
-                    return Err(import_err(
-                        format!("std module imports are not yet supported ('std:{module}')"),
-                        *span,
-                    ));
+                // `std:` 模块由 Engine 在处理 import 时注册，这里跳过（不合并文件）
+                if path.starts_with("std:") {
+                    continue;
                 }
                 let decls = self.load_file(path, current_dir, *span)?;
                 if let ImportKind::Named(names) = kind {

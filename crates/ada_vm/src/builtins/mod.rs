@@ -36,7 +36,7 @@ pub fn register_all(globals: &mut HashMap<String, Value>, sandbox: &Sandbox) {
     if sandbox.allow_env {
         globals.insert(
             "env".to_string(),
-            sys::create_env_module(&sandbox.env_allowlist),
+            sys::create_env_module(Some(&sandbox.env_allowlist)),
         );
     }
     // T7.5：`fs` 只在宿主显式给出受限根目录时注册

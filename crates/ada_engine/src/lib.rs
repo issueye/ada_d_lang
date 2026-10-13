@@ -1,6 +1,7 @@
 use ada_bytecode::Compiler;
 use ada_parser::Parser;
 // 公共 re-export：宿主只需依赖 ada_engine 即可命名 Value 与各类错误类型（T0.7）
+use ada_ast::{ImportKind, Program, Stmt};
 pub use ada_bytecode::CompileError;
 pub use ada_parser::ParseError;
 pub use ada_vm::{
@@ -311,6 +312,15 @@ impl Engine {
                 });
             }
         };
+        let program = match self.resolve_imports(program, None) {
+            Ok(p) => p,
+            Err(err) => {
+                return Err(EvalFailure {
+                    position: err.position(),
+                    error: err,
+                });
+            }
+        };
         let proto = match Compiler::compile_program(&program) {
             Ok(proto) => proto,
             Err(err) => {
@@ -364,8 +374,7 @@ impl Engine {
             }
         };
         let current_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let mut loader = ModuleLoader::new(self.import_root.clone());
-        let merged = match loader.resolve(program, current_dir) {
+        let merged = match self.resolve_imports(program, Some(current_dir)) {
             Ok(p) => p,
             Err(err) => {
                 return Err(EvalFailure {
@@ -398,6 +407,103 @@ impl Engine {
     /// [`Engine::eval_file_diagnostic`] 的便捷版本（丢弃位置）。
     pub fn eval_file(&mut self, path: &Path) -> Result<Value, Error> {
         self.eval_file_diagnostic(path).map_err(|f| f.error)
+    }
+
+    /// 处理 import（T8.8 / T8.13）：注册 `std:` 模块并合并文件 import。
+    /// `current_dir` 为当前文件目录；文件 import 在没有文件上下文时报错。
+    fn resolve_imports(
+        &mut self,
+        program: Program,
+        current_dir: Option<&Path>,
+    ) -> Result<Program, Error> {
+        self.register_std_imports(&program)?;
+        let has_file_import = program
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::Import { path, .. } if !path.starts_with("std:")));
+        if has_file_import {
+            let dir = current_dir.ok_or_else(|| Error::Import {
+                message: "file imports require a file context (use Engine::eval_file)".to_string(),
+                line: 1,
+                col: 1,
+            })?;
+            let mut loader = ModuleLoader::new(self.import_root.clone());
+            loader.resolve(program, dir)
+        } else {
+            Ok(Program {
+                stmts: program
+                    .stmts
+                    .into_iter()
+                    .filter(|s| !matches!(s, Stmt::Import { .. }))
+                    .collect(),
+            })
+        }
+    }
+
+    /// 注册 `std:` 导入（T8.13）：命名空间导入绑定整模块，具名导入绑定单个函数。
+    /// 「导入即授权」——模块以 permissive 构造，不受引擎沙箱 profile 限制（决策 D12）。
+    fn register_std_imports(&mut self, program: &Program) -> Result<(), Error> {
+        for stmt in &program.stmts {
+            let Stmt::Import { kind, path, span } = stmt else {
+                continue;
+            };
+            let Some(module) = path.strip_prefix("std:") else {
+                continue;
+            };
+            let value = self.std_module_value(module, *span)?;
+            match kind {
+                ImportKind::Namespace(alias) => {
+                    self.vm.set_global(alias.clone(), value);
+                }
+                ImportKind::Named(names) => {
+                    let Value::Map(map) = &value else {
+                        unreachable!("std modules are maps");
+                    };
+                    for name in names {
+                        let func =
+                            map.read()
+                                .unwrap()
+                                .get(name.as_str())
+                                .cloned()
+                                .ok_or_else(|| Error::Import {
+                                    message: format!("std module '{module}' has no '{name}'"),
+                                    line: span.line,
+                                    col: span.col,
+                                })?;
+                        self.vm.set_global(name.clone(), func);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn std_module_value(&self, module: &str, span: ada_ast::Span) -> Result<Value, Error> {
+        let permissive = Sandbox::permissive();
+        let value = match module {
+            "json" => ada_vm::builtins::json::create_json_module(&permissive),
+            "math" => ada_vm::builtins::math::create_math_module(),
+            "crypto" => ada_vm::builtins::crypto::create_crypto_module(),
+            "time" => ada_vm::builtins::time::create_time_module(),
+            "sys" => ada_vm::builtins::sys::create_sys_module(),
+            "env" => ada_vm::builtins::sys::create_env_module(None),
+            "fs" => {
+                let root = self.import_root.clone().ok_or_else(|| Error::Import {
+                    message: "importing 'std:fs' requires an import root".to_string(),
+                    line: span.line,
+                    col: span.col,
+                })?;
+                ada_vm::builtins::fs::create_fs_module(root, None)
+            }
+            other => {
+                return Err(Error::Import {
+                    message: format!("unknown std module '{other}'"),
+                    line: span.line,
+                    col: span.col,
+                });
+            }
+        };
+        Ok(value)
     }
 
     /// **静态检查**：只做词法 / 语法 / 编译检查，**不执行**脚本（T7.2）。

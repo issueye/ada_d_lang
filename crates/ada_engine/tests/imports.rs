@@ -3,7 +3,7 @@
 //! 覆盖：正常合并、无 root 拒绝、路径逃逸拒绝、文件缺失、具名导出缺失、
 //! 循环依赖、`std:` 暂未支持、顶层副作用不执行。
 
-use ada_engine::{Engine, Error};
+use ada_engine::{Engine, Error, Value};
 use std::path::{Path, PathBuf};
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -107,18 +107,57 @@ fn circular_import_is_rejected() {
 }
 
 #[test]
-fn std_import_is_not_yet_supported() {
-    let dir = temp_dir("std");
-    write(
-        &dir,
-        "main.ada",
-        "import { parse } from \"std:json\"\nparse(\"{}\")\n",
-    );
+fn std_namespace_import_binds_the_whole_module() {
     let mut engine = Engine::new();
-    engine.set_import_root(dir.clone());
-    let err = engine.eval_file(&dir.join("main.ada")).unwrap_err();
+    let src = r#"import json from "std:json"
+let m = json.parse("{\"a\": 41}")
+m.a + 1"#;
+    let val: i64 = engine.eval(src).unwrap();
+    assert_eq!(val, 42);
+}
+
+#[test]
+fn std_named_import_binds_the_function() {
+    let mut engine = Engine::new();
+    let src = r#"import { sqrt } from "std:math"
+sqrt(16.0)"#;
+    let val: f64 = engine.eval(src).unwrap();
+    assert_eq!(val, 4.0);
+}
+
+#[test]
+fn std_named_import_of_missing_export_errors() {
+    let mut engine = Engine::new();
+    let err = engine
+        .eval::<Value>("import { nope } from \"std:json\"\nnope")
+        .unwrap_err();
     assert!(matches!(err, Error::Import { .. }), "got {err:?}");
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_std_module_errors() {
+    let mut engine = Engine::new();
+    let err = engine
+        .eval::<Value>("import x from \"std:nope\"\nx")
+        .unwrap_err();
+    assert!(matches!(err, Error::Import { .. }), "got {err:?}");
+}
+
+#[test]
+fn std_env_import_grants_read_all() {
+    // 决策 D12「导入即授权」：即便引擎是 strict，import 后 env 也可读全部键
+    let mut engine = Engine::new();
+    let val = engine
+        .eval::<Value>("import env from \"std:env\"\nenv.allowed()")
+        .unwrap();
+    match val {
+        Value::Array(a) => {
+            let items = a.read().unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].to_string(), "*");
+        }
+        other => panic!("expected ['*'], got {other:?}"),
+    }
 }
 
 #[test]
