@@ -115,6 +115,7 @@ let ok = t1.cancel()                                   // 协作式取消，返�
 ### 3.2 可观测行为（实测）
 
 ```ada
+import time from "std:time"
 let t0 = time.now_ms()
 let a = spawn { sleep_ms(200)
 7 }

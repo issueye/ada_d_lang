@@ -1,3 +1,4 @@
+import json from "std:json"
 // AI 示例 1/3：把 JSON 报告规整成表格（json + 适配器管道 + map 字面量）
 //
 // 运行：ada examples/ai/transform.ada

@@ -1,3 +1,7 @@
+import json from "std:json"
+import math from "std:math"
+import time from "std:time"
+import sys from "std:sys"
 // 1. 变量与单行函数
 let base = 100
 fn add(x, y) = x + y + base

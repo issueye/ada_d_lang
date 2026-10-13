@@ -1,3 +1,5 @@
+import json from "std:json"
+import math from "std:math"
 // ============================================================================
 // Ada-D 规范示例 showcase（golden 脚本）
 //
