@@ -304,6 +304,30 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
+### M8 · 模块系统与结构化数据 ✅（版本 0.3.0，破坏性）
+
+**目标**：多文件组织 + 内置模块统一为显式导入 + "类结构体"惯用法。
+
+| ID | 任务 | 优先级 | 完成证据 |
+| :--- | :--- | :--- | :--- |
+| ✅ T8.6 | `import` 语法（lexer/parser/AST） | P1 | `ada_parser` 5 用例；`ImportKind::{Namespace,Named}` + `Stmt::Import` |
+| ✅ T8.7 | `ModuleLoader`（相对路径/root/缓存/循环/`std:` 前缀） | P0 | `crates/ada_engine/tests/imports.rs` |
+| ✅ T8.8 | 声明合并（具名导出校验；只吸收声明、不执行副作用） | P0 | 同上（顶层副作用不执行用例） |
+| ✅ T8.9 | `Engine::set_import_root` + `eval_file`；默认拒绝 | P0 | 无 root 拒绝用例 |
+| ✅ T8.10 | CLI `--import-root` + `run_file` 走 `eval_file` | P1 | CLI 集成 |
+| ✅ T8.11 | 测试：parser/engine/CLI/安全/stdlib 全链路 | P0 | `imports.rs` / `std_imports.rs` / 各迁移测试 |
+| ✅ T8.12 | 文档：SPEC_LANGUAGE §5.7 / SPEC_STDLIB §9 / SPEC_RUNTIME / AI_GUIDE | P1 | 本轮文档提交 |
+| ✅ T8.13 | `std:` 模块导入（命名空间 + 具名；导入即授权） | P0 | `std_imports.rs` + `imports.rs` |
+| ✅ T8.14 | 移除默认注册 + 213 处迁移（**破坏性**） | P0 | 全量测试全绿；CHANGELOG 破坏性条目 |
+| ✅ T8.15 | 安全影响醒目标记（CHANGELOG/SPEC） | P1 | CHANGELOG + SPEC_RUNTIME §10 |
+| ✅ T8.16 | 沙箱测试按 D12 重写 | P0 | `security.rs`（env 白名单/模块冲突/拒绝） |
+| ✅ T8.17 | `deep_eq`/`clone`/`has_keys`/`assert_keys` | P1 | `ada_vm` 4 用例 |
+| ✅ T8.18 | struct 惯用法文档 | P2 | SPEC_STDLIB §9 |
+
+**退出标准**：✅ 达成 —— 文件 import 与 `std:` 内置模块导入全链路可用；内置模块必须显式导入（破坏性，0.3.0）；struct 惯用法可用；`cargo test --workspace` / fmt / clippy 全绿。
+
+---
+
 ## 5. 质量门禁 (Definition of Done)
 
 任何任务/PR 合并前必须全部满足：
@@ -338,11 +362,10 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | 版本 | 内容 | 对应里程碑 |
 | :--- | :--- | :--- |
-| `0.1.0` | 当前原型（前端 + VM + Fuel + 嵌入 API） | 基线 |
-| `0.2.0` | 不崩溃、文档示例可运行、语义收紧 | M0–M3 |
-| `0.3.0` | 真异步并发 + 沙箱权限与资源预算 | M4–M5 |
-| `0.4.0` | 基准与 VM 优化（JIT 可选） | M6 |
-| `1.0.0` | 工具链与生态成型 | M7 |
+| `0.1.0` | 最初原型（前端 + VM + Fuel + 嵌入 API） | 基线 |
+| `0.2.0` | M0–M7 成果（稳健性/语义/并发/沙箱/性能/工具链）+ §13 缺口收尾 | M0–M7 |
+| `0.3.0` | 模块系统与结构化数据（文件 import + 内置模块显式导入 + struct 惯用法）——**含破坏性变更** | M8 |
+| `1.0.0` | API 冻结、生态成熟 | — |
 
 发布条件：该里程碑全部 P0/P1 任务 ✅；golden 测试通过；`CHANGELOG.md` 更新；文档状态标注同步。
 
@@ -365,7 +388,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ## 9. 非目标 (Non-Goals，本阶段明确不做)
 
-- 泛型、宏系统、trait/接口、模块（`import`）系统、OOP 类模型。
+- 泛型、宏系统、trait/接口、OOP 类模型（**模块（`import`）系统已移出非目标，见 M8**）。
 - 完整 GC（分代/压缩）；当前采用 `Arc` 引用计数，仅在基准证伪时才重新评估（D6）。
 - 完整 LSP（补全/重构）；M7 只做诊断。
 - 包管理器与中央仓库。
@@ -385,6 +408,9 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | D6 | 内存模型 | ~~A 维持 `Arc<RwLock>`~~；~~B 引入 GC~~ → **已决：A（维持 `Arc<RwLock<Value>>`）** | **决策（2026-10，M6 执行期，M5 遗留评估项）**：无 GC 停顿、析构确定、与单线程协作式调度（D2）匹配；代价是引用计数开销与**循环引用泄漏**。泄漏由 M5 的 `max_memory_bytes` 兜底（从"无界"降为"有界"），规范已记录该组合语义。tracing GC 会引入停顿与不确定性，与"可预测"定位冲突 | ✅ 已决（SPEC_RUNTIME §11.5） |
 | D7 | `match` 非穷尽 | ~~A 运行时错误~~；~~B 编译期警告~~ → **已决：A（运行时错误）** | **决策（2026-10，M3 执行期）**：无 arm 匹配时旧实现会留下**未赋值的目标寄存器**（读到上一个值而非 `nil`），这是静默错误值；改为 `MatchFail` 指令抛 `VmError::NoMatch`。选 B（仅警告）无法阻止错误值继续传播 | ✅ 已决（T3.2 落地） |
 | D8 | 闭包捕获语义 | ~~A 值拷贝~~；~~B 引用共享（Cell）~~ → **已决：B（引用共享）** | **决策（2026-10，M2 执行期）**：被捕获变量装箱为共享槽，闭包内写入对外层可见；循环变量每轮独立槽（类 JS `let`）；代价是被捕获变量的读写多一层 Cell 间接（仅对被捕获的变量生效，未捕获的局部变量仍是纯寄存器） | ✅ 已决（T2.2 落地） |
+| **D10** | 文件 import | **具名文件导入 + 纯声明合并 + root 边界 + 默认拒绝** | **决策（2026-10，M8 执行期）**：`import { a } from "./lib.ada"`——相对当前文件解析、`canonicalize` 后限制在 import root 内、只吸收被导入文件的顶层 `fn`/`let` 声明（不执行顶层副作用）、循环依赖报错；`Engine::set_import_root` / CLI `--import-root` 启用，未配置时默认拒绝。见 [plans/2026-10-13-import-and-struct-like-design.md](plans/2026-10-13-import-and-struct-like-design.md) | ✅ 已决（M8 落地） |
+| **D11** | struct / 对象 | **map + 约定，零语法**（保留"OOP 类模型"非目标） | **决策（2026-10，M8 执行期）**：不引入 `struct` 关键字；用构造函数约定 + 自引用闭包方法 + `deep_eq`/`clone`/`has_keys`/`assert_keys` 模拟。保留 §9 的"OOP 类模型"非目标 | ✅ 已决（M8 落地） |
+| **D12** | 内置模块导入 | **必须显式导入 + 导入即完全授权** | **决策（2026-10，M8 执行期）**：移除内置模块的默认注册，脚本必须 `import X from "std:X"`；`std:` 导入即**完全授权**（绕过沙箱 profile 的模块开关，`import env` 可读全部环境变量），但内存/墙钟预算仍生效；`fs` 例外（仍需宿主根目录）。⚠️ 安全影响：沙箱对内置模块的约束被 import 取代 | ✅ 已决（M8 落地） |
 
 > 决策流程：在本文档补记结论 → 更新对应 `SPEC_*.md` → 再动手实现。
 
@@ -444,6 +470,7 @@ docs/
 | M5 沙箱安全 | 1–2 周 | ✅ | ☑ |
 | M6 性能与 JIT | 3–6 周 | ✅ | ☑（T6.1/T6.2/T6.3/T6.5 完成，≈−29% 平均；T6.4 JIT 延后并记录理由） |
 | M7 生态工具链 | 长期 | ✅ | ☑（T7.1–T7.5 全部完成；`http` 按 D9 明确不做） |
+| M8 模块系统与结构化数据 | 2–3 周 | ✅ | ☑（T8.6–T8.18 全部完成；文件 import + 内置模块显式导入（破坏性）+ struct 惯用法） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。
 
