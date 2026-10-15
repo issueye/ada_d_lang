@@ -5,6 +5,7 @@ members = [
     "crates/ada_lexer",
     "crates/ada_parser",
     "crates/ada_bytecode",
+    "crates/ada_net",
     "crates/ada_vm",
     "crates/ada_engine",
     "crates/ada_lsp",

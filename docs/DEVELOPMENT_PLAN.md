@@ -294,7 +294,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | ID | 决策 | 选项 | 结论与理由 | 状态 |
 | :--- | :--- | :--- | :--- | :--- |
-| D9 | 网络能力（`http`） | A 提供受限 HTTP 客户端；B 不提供 | **B（不提供）**：TLS 需要引入重量级依赖；即使有 TLS，仍需主机/端口白名单、重定向限制、超时与响应体上限，否则 SSRF/资源耗尽面远大于收益。0.1.0 的定位是"宿主注入能力的嵌入式脚本"——需要网络时由宿主 `register_fn` 显式提供，责任边界更清晰 | ✅ 已决（T7.5） |
+| D9 | 网络能力（`http`） | ~~A 提供受限 HTTP 客户端~~；~~B 不提供~~ → **已被 D13 推翻** | **原结论 B（不提供）**：TLS 需要引入重量级依赖；即使有 TLS，仍需主机/端口白名单、重定向限制、超时与响应体上限，否则 SSRF/资源耗尽面远大于收益。0.1.0 的定位是"宿主注入能力的嵌入式脚本"——需要网络时由宿主 `register_fn` 显式提供，责任边界更清晰。**M9 起由 D13 取代**：上述每一条顾虑都改为以可验证的强制点落地，而不是靠"不提供" | ⛔ 已推翻（M9，见 D13） |
 
 **M7 附加修复（由新门禁暴露，已落地）**：
 - **D4 一致性问题**：`match` 分支体此前无条件把 `{` 当块，导致 `=> { k: v }` 无法解析，与决策 D4（`{}` 是 map）矛盾。现在分支体与表达式共用同一消歧函数 `parse_brace_expr`（回归测试见 `semantics.rs::match_arm_bodies_follow_the_same_brace_rule`，规范见 SPEC_LANGUAGE §5.6）。
@@ -328,6 +328,24 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
+### M9 · 网络能力（TCP / UDP / HTTP / HTTPS）🚧
+
+**前置决策**：D13（提供受沙箱管控的网络能力，**推翻 D9**）与 D14（Tokio 只承载 I/O，字节码仍单线程，**修订 D2**）。
+
+**目标**：让脚本能在宿主显式授权下做网络请求，且默认姿态仍是"没有网络"。
+
+| ID | 任务 | 优先级 | 涉及文件 | 验收 / 完成证据 |
+| :--- | :--- | :--- | :--- | :--- |
+| 🚧 T9.1 | `ada_net` crate：策略、运行时、TCP/UDP、HTTP/1.1+HTTP/2 + TLS(ring) | P0 | `crates/ada_net/**` | 26 个用例（15 单元 + 11 集成，全 hermetic loopback）：白名单/端口/私有地址/通配符语义、超时、载荷上限、重定向默认不跟随 + 每跳重过白名单 + 禁降级、UDP 绑定开关、`run_blocking` 不吞其它完成事件 |
+| 📋 T9.2 | `Sandbox::with_net_policy` + `net` 模块（TCP/UDP），网络调用接入 `AsyncKind` 挂起 | P0 | `ada_vm/src/{sandbox,value,vm,task}.rs`、`builtins/{mod,net}.rs` | 待补 |
+| 📋 T9.3 | `http` 模块（`get`/`post`/`request`），h1/h2 | P0 | `builtins/http.rs` | 待补 |
+| 📋 T9.4 | CLI：`--net-allow` / `--net-timeout-ms` / `--net-max-bytes` 等 | P1 | `ada_cli/src/main.rs` | 待补 |
+| 📋 T9.5 | 文档：SPEC_STDLIB §3.7/§3.8、SPEC_RUNTIME §10、SPEC_ASYNC §4.3、AI_GUIDE §9、CHANGELOG | P1 | `docs/**`、`CHANGELOG.md` | 待补 |
+
+**退出标准**：未授予网络时 `import http from "std:http"` 失败（unknown），裸 `net`/`http` 报 `CapabilityDenied`；授予后能对 loopback 完成 TCP/UDP/HTTP 往返；网络调用在 `spawn` 下可被其它任务交错；`cargo test --workspace` 全绿。
+
+---
+
 ## 5. 质量门禁 (Definition of Done)
 
 任何任务/PR 合并前必须全部满足：
@@ -337,7 +355,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 3. **禁止新增 panic 路径**：库代码中不得出现可被脚本输入触发的 `unwrap`/`expect`/切片索引/未检查算术；确需 `unwrap` 时必须有注释说明不可失败的不变量。
 4. 行为变更同步更新对应 `SPEC_*.md`，并在本计划任务行标注完成证据。
 5. 公开 API 变更需在 `CHANGELOG.md` 记录（T0.1 之后建立）。
-6. 提交信息格式：`<area>: <what>`（area ∈ `lexer|parser|bytecode|vm|stdlib|async|sandbox|docs|ci`）。
+6. 提交信息格式：`<area>: <what>`（area ∈ `lexer|parser|bytecode|vm|stdlib|async|sandbox|net|docs|ci`）。
 
 ---
 
@@ -411,6 +429,8 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | **D10** | 文件 import | **具名文件导入 + 纯声明合并 + root 边界 + 默认拒绝** | **决策（2026-10，M8 执行期）**：`import { a } from "./lib.ada"`——相对当前文件解析、`canonicalize` 后限制在 import root 内、只吸收被导入文件的顶层 `fn`/`let` 声明（不执行顶层副作用）、循环依赖报错；`Engine::set_import_root` / CLI `--import-root` 启用，未配置时默认拒绝。见 [plans/2026-10-13-import-and-struct-like-design.md](plans/2026-10-13-import-and-struct-like-design.md) | ✅ 已决（M8 落地） |
 | **D11** | struct / 对象 | **map + 约定，零语法**（保留"OOP 类模型"非目标） | **决策（2026-10，M8 执行期）**：不引入 `struct` 关键字；用构造函数约定 + 自引用闭包方法 + `deep_eq`/`clone`/`has_keys`/`assert_keys` 模拟。保留 §9 的"OOP 类模型"非目标 | ✅ 已决（M8 落地） |
 | **D12** | 内置模块导入 | **必须显式导入 + 导入即完全授权** | **决策（2026-10，M8 执行期）**：移除内置模块的默认注册，脚本必须 `import X from "std:X"`；`std:` 导入即**完全授权**（绕过沙箱 profile 的模块开关，`import env` 可读全部环境变量），但内存/墙钟预算仍生效；`fs` 例外（仍需宿主根目录）。⚠️ 安全影响：沙箱对内置模块的约束被 import 取代 | ✅ 已决（M8 落地） |
+| **D13** | 网络能力（**推翻 D9**） | A 维持不提供；B 提供受沙箱管控的 TCP/UDP/HTTP/HTTPS | **决策（M9 执行期）= B**，但不是"D9 那套顾虑被接受"，而是把它们逐条变成**可验证的强制点**：① **默认拒绝**——没有宿主授予的 `NetPolicy` 时模块根本不存在（`import net` 报 unknown，与 `fs` 同构）；② **主机 + 端口白名单**（`*.suffix` 只匹配子域）；③ **解析后地址校验**：默认拒绝私有/保留地址段（防 DNS rebinding），且只连**校验过的 `SocketAddr`**，不让 OS 重新解析（防 TOCTOU）；④ **硬超时**：连接与单次读写都有上限；⑤ **载荷字节上限**（默认 1 MiB，与 `fs` 一致），且响应体**超限即失败**而不是先分配再检查；⑥ **重定向默认不跟随**，打开后每一跳都要重新过白名单，并禁止 `https → http` 降级；⑦ **UDP 绑定需单独开关**（绑定带服务端性质）；⑧ 本轮**不做 TCP listen**。原 D9 的"由宿主 `register_fn` 注入"路径仍然有效，两者并存 | ✅ 已决（M9 落地） |
+| **D14** | 网络 I/O 的承载方式（**修订 D2**） | A 阻塞调用（与 `fs` 同构）；B 引入 Tokio 但字节码仍单线程 | **决策（M9 执行期）= B**：Tokio 只承载 socket / TLS / HTTP，跑在**独立驱动线程**（`ada-net-driver`，current-thread runtime）上；VM 线程仍是唯一的字节码执行者，网络完成事件只在 VM 空闲等待时被收取，因此 `spawn`/`await` 的调度顺序不变——**D2 的执行模型与确定性保留**，改变的只是"多了一个不为 VM 服务的 I/O 线程"。网络调用是**真正的挂起点**（复用 `sleep_ms` 的 `AsyncKind` 机制），可被其它任务交错；在无法挂起的上下文（迭代器适配器回调内，`rust_depth > 0`）降级为阻塞，与 `sleep_ms` 完全同构并记入 SPEC_ASYNC §4.3。⚠️ **代价**：`ada_vm` 新增 tokio/hyper/rustls 依赖树，"零依赖/无线程"的旧表述不再成立；TLS 后端固定为 `ring`（`aws-lc-rs` 需要 cmake+NASM，开发机没有） | ✅ 已决（M9 落地） |
 
 > 决策流程：在本文档补记结论 → 更新对应 `SPEC_*.md` → 再动手实现。
 

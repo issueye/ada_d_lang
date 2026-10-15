@@ -1,0 +1,21 @@
+[package]
+name = "ada_net"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Host-side network transport for Ada-D (TCP/UDP/HTTP) — no script types here"
+
+[dependencies]
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "macros"] }
+hyper = { version = "1", features = ["client", "server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+http-body-util = "0.1"
+bytes = "1"
+url = "2"
+
+[dev-dependencies]
