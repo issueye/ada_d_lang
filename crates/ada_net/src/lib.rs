@@ -24,6 +24,10 @@ pub use op::{Handle, HttpMethod, HttpRequest, HttpResponse, NetOp, NetReply, OpI
 pub use policy::{HostRule, NetPolicy};
 pub use runtime::NetRuntime;
 
+/// 重新导出 `rustls`：宿主构造自己的 TLS 配置（私有 CA、额外信任根）时需要它的类型，
+/// 而 `ada_vm` / `ada_engine` 不应各自再声明一份 rustls 依赖。
+pub use rustls;
+
 use std::sync::Arc;
 
 /// 构建使用 `ring` 后端的 rustls 客户端配置。

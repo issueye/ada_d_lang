@@ -11,6 +11,14 @@ ada_lexer = { path = "../ada_lexer" }
 ada_parser = { path = "../ada_parser" }
 ada_bytecode = { path = "../ada_bytecode" }
 ada_vm = { path = "../ada_vm" }
+ada_net = { path = "../ada_net" }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# 仅集成测试用：起一个最小的 TLS 服务端，验证宿主注入私有 CA 的那条路径。
+tokio = { version = "1", features = ["rt", "net", "macros", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 

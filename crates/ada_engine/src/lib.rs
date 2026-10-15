@@ -3,6 +3,11 @@ use ada_parser::Parser;
 // 公共 re-export：宿主只需依赖 ada_engine 即可命名 Value 与各类错误类型（T0.7）
 use ada_ast::{Program, Stmt};
 pub use ada_bytecode::CompileError;
+// M9：宿主通过 `NetPolicy` 决定网络授权（与 `Sandbox::with_net_policy` 配套）。
+pub use ada_net::NetPolicy;
+// 宿主构造自定义 TLS 配置（私有 CA）时需要 rustls 的类型；统一从这里取，
+// 免得下游再声明一份版本可能不一致的 rustls 依赖。
+pub use ada_net::rustls;
 pub use ada_parser::ParseError;
 pub use ada_vm::{
     AsyncKind, Closure, NativeCallback, ProfileKind, Sandbox, TaskCell, TaskState, Value, Vm,

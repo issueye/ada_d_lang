@@ -226,6 +226,16 @@ impl NetPolicy {
         self.allow_private_addresses
     }
 
+    /// 单次操作的**总时长上界**。
+    ///
+    /// 这个值有一个结构性用途，不只是诊断：VM 把网络调用做成挂起点后，"操作是否总会
+    /// 结算"就成了调度器不死锁的前提。运行时用这个上界把每个操作整体包一层 `timeout`，
+    /// 从而保证**每个提交的操作都会在有限时间内产生恰好一个完成事件**——包括 DNS 解析、
+    /// 读响应体这些本身没有单独超时的步骤。
+    pub fn operation_budget(&self) -> Duration {
+        self.connect_timeout + self.io_timeout * 2
+    }
+
     /// 白名单是否为空（空即全拒绝）。用于自省与诊断。
     pub fn is_deny_all(&self) -> bool {
         self.allowed.is_empty()

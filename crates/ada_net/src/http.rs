@@ -18,6 +18,7 @@ use hyper::body::Incoming;
 use hyper::header::{CONNECTION, CONTENT_LENGTH, HOST, LOCATION, TRANSFER_ENCODING};
 use hyper::{Request, Response};
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use url::Url;
 
@@ -31,7 +32,11 @@ struct RawResponse {
 }
 
 /// 执行一次 HTTP 请求（含重定向策略）。
-pub async fn execute(request: HttpRequest, policy: &NetPolicy) -> Result<NetReply, NetError> {
+pub async fn execute(
+    request: HttpRequest,
+    policy: &NetPolicy,
+    tls: &Arc<rustls::ClientConfig>,
+) -> Result<NetReply, NetError> {
     let mut url = parse_url(&request.url)?;
     let mut method = request.method;
     let mut body = request.body.clone();
@@ -43,14 +48,7 @@ pub async fn execute(request: HttpRequest, policy: &NetPolicy) -> Result<NetRepl
         let (host, port) = host_and_port(&url)?;
         policy.check_host(&host, port)?;
 
-        let raw = send_once(
-            &url,
-            method,
-            &request.headers,
-            body.clone(),
-            policy,
-        )
-        .await?;
+        let raw = send_once(&url, method, &request.headers, body.clone(), policy, tls).await?;
 
         let is_redirect = matches!(raw.status, 301 | 302 | 303 | 307 | 308);
         if !is_redirect {
@@ -136,6 +134,7 @@ async fn send_once(
     headers: &[(String, String)],
     body: Option<Vec<u8>>,
     policy: &NetPolicy,
+    tls_config: &Arc<rustls::ClientConfig>,
 ) -> Result<RawResponse, NetError> {
     let (host, port) = host_and_port(url)?;
     if let Some(len) = body.as_ref().map(|b| b.len()) {
@@ -178,8 +177,7 @@ async fn send_once(
     let request = build_request(url, method, headers, body)?;
 
     if url.scheme() == "https" {
-        let config = crate::tls_client_config();
-        let connector = tokio_rustls::TlsConnector::from(config);
+        let connector = tokio_rustls::TlsConnector::from(Arc::clone(tls_config));
         let server_name = rustls::pki_types::ServerName::try_from(host.clone())
             .map_err(|e| NetError::Tls(format!("invalid server name '{host}': {e}")))?;
         let tls = tokio::time::timeout(policy.io_timeout(), connector.connect(server_name, tcp))

@@ -92,6 +92,86 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 const TASK_BYTES: usize = 512;
 /// 每多少条指令检查一次墙钟预算（子毫秒粒度，避免每次指令都取时钟）。
 const WALL_CLOCK_CHECK_INTERVAL: u64 = 4096;
+/// 网络 `read`/`recv_from` 未给字节数时的默认上限（M9）。仍受策略上限夹取。
+const NET_READ_DEFAULT: usize = 4096;
+
+/// 把 `Option<&Value>` 描述成可读文本（错误消息用；`None` 表示参数缺失）。
+fn describe_value(value: Option<&Value>) -> String {
+    match value {
+        None => "no value (missing argument)".to_string(),
+        Some(value) => value.type_name().to_string(),
+    }
+}
+
+/// 解析 HTTP 的 `headers` 实参：必须是 `map[string, string]`，缺省即空。
+///
+/// 用**类型**而不是位置区分"headers 还是 body"：`get(url, headers)` 与
+/// `post(url, body, headers)` 的第二个实参类型不同（map vs string）。
+fn net_headers_arg(value: Option<&Value>, what: &str) -> Result<Vec<(String, String)>, VmError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    match value {
+        Value::Nil => Ok(Vec::new()),
+        Value::Map(entries) => {
+            let guard = entries.read().unwrap_or_else(|e| e.into_inner());
+            let mut headers = Vec::with_capacity(guard.len());
+            for (name, item) in guard.iter() {
+                match item {
+                    Value::String(text) => headers.push((name.clone(), text.to_string())),
+                    other => {
+                        return Err(VmError::TypeError(format!(
+                            "{what}: header '{name}' must be a string, got {}",
+                            other.type_name()
+                        )))
+                    }
+                }
+            }
+            Ok(headers)
+        }
+        other => Err(VmError::TypeError(format!(
+            "{what} expects a headers map, got {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// HTTP 响应 → 脚本可见的 map。
+///
+/// `body` 是 UTF-8 字符串（非 UTF-8 字节按 `U+FFFD` 替换）；原始字节访问见
+/// SPEC_STDLIB §3.8 记录的后续任务。
+fn http_response_value(response: ada_net::HttpResponse) -> Value {
+    let mut headers = std::collections::HashMap::new();
+    for (name, value) in &response.headers {
+        headers
+            .entry(name.to_ascii_lowercase())
+            .and_modify(|existing: &mut Value| {
+                // 同名头（如 set-cookie）合并为逗号分隔，避免静默丢失。
+                let merged = format!("{}, {}", existing.to_string(), value);
+                *existing = Value::string(merged);
+            })
+            .or_insert_with(|| Value::string(value.clone()));
+    }
+
+    let mut map = std::collections::HashMap::new();
+    map.insert("status".to_string(), Value::Int(response.status as i64));
+    map.insert(
+        "ok".to_string(),
+        Value::Bool((200..300).contains(&response.status)),
+    );
+    map.insert("headers".to_string(), Value::map(headers));
+    map.insert(
+        "body".to_string(),
+        Value::string(String::from_utf8_lossy(&response.body).to_string()),
+    );
+    map.insert("len".to_string(), Value::Int(response.body.len() as i64));
+    map.insert(
+        "protocol".to_string(),
+        Value::string(response.protocol.to_string()),
+    );
+    map.insert("url".to_string(), Value::string(response.final_url));
+    Value::map(map)
+}
 
 /// 近似内存预算（M5 / T5.3）。
 ///
@@ -328,6 +408,16 @@ pub struct Vm {
     last_error_span: Option<Span>,
     /// 最近一个失败任务**自己**的位置（T1.8）：`await` 报错时优先用它
     last_failed_task_span: Option<Span>,
+    /// 网络运行时（M9 / D14）：**惰性创建**——没有网络调用就不启动驱动线程。
+    /// 沙箱变更（或每次 `set_sandbox`）时丢弃重建，因为连接归属旧策略。
+    net: Option<ada_net::NetRuntime>,
+    /// 正在等网络完成事件的任务（`op_id -> task_id`）。
+    io_waiters: Vec<(ada_net::OpId, TaskId)>,
+    /// 已到达但还没被消费的网络结果（`op_id -> 结果`）。
+    ///
+    /// 完成事件是**一次性**的：`drain_net_completions` 把它从运行时的队列里取走后，
+    /// 结果必须先寄存，等任务被调度到挂起点收尾时（`apply_resume`）再消费。
+    io_results: HashMap<ada_net::OpId, Result<ada_net::NetReply, String>>,
 }
 
 impl Default for Vm {
@@ -370,6 +460,9 @@ impl Vm {
             instructions_executed: 0,
             last_error_span: None,
             last_failed_task_span: None,
+            net: None,
+            io_waiters: Vec::new(),
+            io_results: HashMap::new(),
         };
         vm.apply_sandbox();
         vm
@@ -431,11 +524,16 @@ impl Vm {
         self.denied_globals.clear();
         self.budget.set_limit(self.sandbox.max_memory_bytes);
         crate::builtins::register_all(&mut self.globals, &self.sandbox);
-        for name in ["time", "env", "sys", "sleep_ms", "fs"] {
+        for name in ["time", "env", "sys", "sleep_ms", "fs", "net", "http"] {
             if !self.sandbox.allows_global(name) {
                 self.denied_globals.push(name.to_string());
             }
         }
+        // M9：连接属于授予它的那份策略。沙箱一变（含每次 `set_sandbox`）就丢弃运行时，
+        // 顺带关掉驱动线程；下次真正用到网络时再惰性重建。
+        self.net = None;
+        self.io_waiters.clear();
+        self.io_results.clear();
         // T8.3：内建函数与模块名进"宿主不可变"集合——脚本 `json = 1` 这类覆盖
         // 此前是静默生效的，会把模块整个换掉。宿主仍可通过 `set_global` 注入。
         self.immutable_declared.clear();
@@ -586,6 +684,11 @@ impl Vm {
         self.rust_depth = 0;
         self.suspend_request = None;
         self.pending_resume = None;
+
+        // M9：网络等待是"本次求值"的事——上一次求值留下的等待者不该让这次误以为还有活。
+        // （连接表在运行时里，仍然跨求值存活，因此句柄可以经全局变量传给下一次求值。）
+        self.io_waiters.clear();
+        self.io_results.clear();
 
         // M5：资源计量按"每次求值"重新开始
         self.budget.reset();
@@ -1077,6 +1180,15 @@ impl Vm {
             match next {
                 Some(id) => pending = Some(self.resume_task(id)),
                 None => {
+                    // M9：还有任务在等网络时，这里**不能**判定死锁——改为一并等待网络完成
+                    // 事件。`next_deadline()` 为 `None`（没有定时器）也照等，因为网络
+                    // 完成事件本身就是唤醒源。
+                    if self.has_pending_io() {
+                        self.wait_for_io_or_timer()?;
+                        self.drain_net_completions();
+                        self.scheduler.wake_due(Self::now_ms());
+                        continue;
+                    }
                     let Some(deadline) = self.scheduler.next_deadline() else {
                         return Err(VmError::TaskDeadlock);
                     };
@@ -1099,6 +1211,35 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// 在没有就绪任务时等待：下一个定时器到期，**或**任意一个网络操作完成（M9）。
+    ///
+    /// 网络等待同样计入墙钟预算——否则脚本可以靠"发一个慢请求"绕过 `max_wall_clock_ms`。
+    fn wait_for_io_or_timer(&mut self) -> Result<(), VmError> {
+        let timer_budget_ms = match self.scheduler.next_deadline() {
+            Some(deadline) => deadline.saturating_sub(Self::now_ms()),
+            None => u64::MAX,
+        };
+        let wait_ms = match self.remaining_wall_clock_ms() {
+            Some(0) => {
+                return Err(VmError::WallClockLimitExceeded {
+                    limit_ms: self.sandbox.max_wall_clock_ms.unwrap_or(0),
+                })
+            }
+            Some(remaining) => timer_budget_ms.min(remaining),
+            None => timer_budget_ms,
+        };
+        let deadline = if wait_ms == u64::MAX {
+            None
+        } else {
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(wait_ms))
+        };
+        if let Some(net) = self.net.as_ref() {
+            net.wait_until(deadline);
+        }
+        self.check_wall_clock()?;
+        Ok(())
     }
 
     /// 结算任务并把等待它的现场放回就绪队列。
@@ -1136,6 +1277,8 @@ impl Vm {
             Some(ResumeSource::AwaitAny(ids)) => ids.iter().any(|id| self.is_settled(*id)),
             // 超时：无论被任务结算还是被定时器唤醒都要恢复（结果由 apply_resume 判定）
             Some(ResumeSource::Timeout(_)) => true,
+            // 网络：只有结果真的到了才恢复（否则继续挂起）
+            Some(ResumeSource::Io { op }) => self.io_results.contains_key(op),
             None => true,
         };
         self.scheduler.park(waiter, execution);
@@ -1175,6 +1318,14 @@ impl Vm {
                 } else {
                     self.scheduler.add_waiter(target, id);
                     self.scheduler.add_timer(deadline_ms, id);
+                }
+            }
+            Suspend::Io { op } => {
+                // 提交与挂起之间有窗口：完成事件可能已经躺在寄存表里了。
+                if self.io_results.contains_key(&op) {
+                    self.scheduler.enqueue(id);
+                } else {
+                    self.io_waiters.push((op, id));
                 }
             }
         }
@@ -1267,6 +1418,35 @@ impl Vm {
                     },
                 )
             }
+            // M9：`spawn net.tcp_connect(...)` / `spawn http.get(...)` —— 任务体就是一次
+            // 网络操作。这里也必须走挂起路径，否则"两个请求并发"根本不会重叠。
+            Value::Async { kind, receiver } if kind.is_network() => {
+                let mut effective = Vec::new();
+                if let Some(receiver) = receiver {
+                    effective.push((**receiver).clone());
+                }
+                effective.extend(args.iter().cloned());
+                let op = match self.build_net_op(*kind, &effective) {
+                    Ok(op) => op,
+                    Err(err) => return StepResult::TaskDone(id, Err(err)),
+                };
+                let op_id = match self.net_runtime() {
+                    Ok(runtime) => runtime.submit(op),
+                    Err(err) => return StepResult::TaskDone(id, Err(err)),
+                };
+                self.scheduler.park(
+                    id,
+                    SavedExecution {
+                        frames: Vec::new(),
+                        registers: Vec::new(),
+                        resume: Some(PendingResume {
+                            dst: None,
+                            source: ResumeSource::Io { op: op_id },
+                        }),
+                    },
+                );
+                StepResult::Suspended(id, Suspend::Io { op: op_id })
+            }
             other => {
                 // 原生函数/内在函数/其它异步操作：无法挂起，直接求值
                 let value = self.call_callable(other, &args);
@@ -1329,6 +1509,18 @@ impl Vm {
                         Value::Nil
                     }
                     None => Value::Nil,
+                }
+            }
+            ResumeSource::Io { op } => {
+                // 结果必须已经寄存（`wake_waiter` 只在结果到达后才放行任务）。
+                match self.io_results.remove(op) {
+                    Some(Ok(reply)) => self.net_reply_to_value(reply)?,
+                    Some(Err(message)) => return Err(VmError::NativeError(message)),
+                    None => {
+                        return Err(VmError::NativeError(format!(
+                            "internal error: network operation {op} resumed without a result"
+                        )))
+                    }
                 }
             }
         };
@@ -1431,7 +1623,32 @@ impl Vm {
 
     /// 不可挂起上下文里的异步操作实现（嵌套回调 / 任务首次执行）。
     fn call_async_blocking(&mut self, kind: AsyncKind, args: &[Value]) -> Result<Value, VmError> {
+        // M9：网络操作在无法挂起的上下文里同步跑完（见 SPEC_ASYNC §4.3）。
+        if kind.is_network() {
+            let op = self.build_net_op(kind, args)?;
+            let reply = self
+                .net_runtime()?
+                .run_blocking(op)
+                .map_err(|err| VmError::NativeError(err.to_string()))?;
+            return self.net_reply_to_value(reply);
+        }
         match kind {
+            // 网络 kinds 已在函数开头提前返回，这些分支不可达——但必须写出来让 match
+            // 穷尽（用错误而不是 `unreachable!()`：不新增 panic 路径，见计划 §5.3）。
+            AsyncKind::TcpConnect
+            | AsyncKind::TcpRead
+            | AsyncKind::TcpWrite
+            | AsyncKind::TcpClose
+            | AsyncKind::UdpBind
+            | AsyncKind::UdpSendTo
+            | AsyncKind::UdpRecvFrom
+            | AsyncKind::UdpClose
+            | AsyncKind::HttpGet
+            | AsyncKind::HttpPost
+            | AsyncKind::HttpRequest => Err(VmError::TypeError(format!(
+                "internal error: {} reached the non-network path",
+                kind.name()
+            ))),
             AsyncKind::Sleep => {
                 let ms = args.first().and_then(|a| a.as_int()).unwrap_or(0);
                 if ms > 0 {
@@ -1493,14 +1710,279 @@ impl Vm {
         true
     }
 
+    // ------------------------------------------------------- 网络（M9 / D13 / D14）
+
+    /// 惰性取得网络运行时（首次真正用到网络时才启动驱动线程）。
+    fn net_runtime(&mut self) -> Result<&ada_net::NetRuntime, VmError> {
+        if self.net.is_none() {
+            let policy = self.sandbox.net_policy.clone().ok_or_else(|| {
+                VmError::CapabilityDenied {
+                    name: "net".to_string(),
+                    profile: self.sandbox.kind.name(),
+                }
+            })?;
+            let runtime = match self.sandbox.net_tls.clone() {
+                Some(tls) => ada_net::NetRuntime::with_tls_config(policy, tls),
+                None => ada_net::NetRuntime::new(policy),
+            }
+            .map_err(|err| {
+                VmError::NativeError(format!("network runtime unavailable: {err}"))
+            })?;
+            self.net = Some(runtime);
+        }
+        self.net
+            .as_ref()
+            .ok_or_else(|| VmError::NativeError("network runtime missing".to_string()))
+    }
+
+    /// 把一次网络异步调用的实参翻译成 `ada_net` 操作。
+    ///
+    /// 约定：**句柄总是第一个实参**（方法形式下由 VM 把接收者拼到实参之前，与
+    /// `sleep_ms` 等既有 `AsyncKind` 完全一致）。
+    fn build_net_op(&self, kind: AsyncKind, args: &[Value]) -> Result<ada_net::NetOp, VmError> {
+        let what = kind.name();
+        let string_at = |idx: usize| -> Result<String, VmError> {
+            match args.get(idx) {
+                Some(Value::String(s)) => Ok(s.to_string()),
+                other => Err(VmError::TypeError(format!(
+                    "{what} expects a string at argument {}, got {}",
+                    idx + 1,
+                    describe_value(other)
+                ))),
+            }
+        };
+        let handle_at = |idx: usize| -> Result<ada_net::Handle, VmError> {
+            match args.get(idx) {
+                Some(Value::Int(id)) if *id >= 0 => Ok(*id as ada_net::Handle),
+                other => Err(VmError::TypeError(format!(
+                    "{what} expects a network handle at argument {}, got {}",
+                    idx + 1,
+                    describe_value(other)
+                ))),
+            }
+        };
+        let count_at = |idx: usize, default: usize| -> Result<usize, VmError> {
+            match args.get(idx) {
+                None | Some(Value::Nil) => Ok(default),
+                Some(Value::Int(n)) if *n > 0 => Ok(*n as usize),
+                other => Err(VmError::TypeError(format!(
+                    "{what} expects a positive byte count at argument {}, got {}",
+                    idx + 1,
+                    describe_value(other)
+                ))),
+            }
+        };
+        let bytes_at = |idx: usize| -> Result<Vec<u8>, VmError> {
+            match args.get(idx) {
+                Some(Value::String(s)) => Ok(s.as_bytes().to_vec()),
+                other => Err(VmError::TypeError(format!(
+                    "{what} expects a string body at argument {}, got {}",
+                    idx + 1,
+                    describe_value(other)
+                ))),
+            }
+        };
+        let port_at = |idx: usize| -> Result<u16, VmError> {
+            match args.get(idx) {
+                Some(Value::Int(p)) if (0..=65535).contains(p) => Ok(*p as u16),
+                other => Err(VmError::TypeError(format!(
+                    "{what} expects a port (0-65535) at argument {}, got {}",
+                    idx + 1,
+                    describe_value(other)
+                ))),
+            }
+        };
+
+        match kind {
+            AsyncKind::TcpConnect => Ok(ada_net::NetOp::TcpConnect {
+                host: string_at(0)?,
+                port: port_at(1)?,
+            }),
+            AsyncKind::TcpRead => Ok(ada_net::NetOp::TcpRead {
+                handle: handle_at(0)?,
+                max_bytes: count_at(1, NET_READ_DEFAULT)?,
+            }),
+            AsyncKind::TcpWrite => Ok(ada_net::NetOp::TcpWrite {
+                handle: handle_at(0)?,
+                data: bytes_at(1)?,
+            }),
+            AsyncKind::TcpClose => Ok(ada_net::NetOp::TcpClose {
+                handle: handle_at(0)?,
+            }),
+            AsyncKind::UdpBind => Ok(ada_net::NetOp::UdpBind {
+                host: "0.0.0.0".to_string(),
+                port: port_at(0)?,
+            }),
+            AsyncKind::UdpSendTo => Ok(ada_net::NetOp::UdpSendTo {
+                handle: handle_at(0)?,
+                host: string_at(1)?,
+                port: port_at(2)?,
+                data: bytes_at(3)?,
+            }),
+            AsyncKind::UdpRecvFrom => Ok(ada_net::NetOp::UdpRecvFrom {
+                handle: handle_at(0)?,
+                max_bytes: count_at(1, NET_READ_DEFAULT)?,
+            }),
+            AsyncKind::UdpClose => Ok(ada_net::NetOp::UdpClose {
+                handle: handle_at(0)?,
+            }),
+            AsyncKind::HttpGet => Ok(ada_net::NetOp::Http {
+                request: ada_net::HttpRequest {
+                    method: ada_net::HttpMethod::Get,
+                    url: string_at(0)?,
+                    headers: net_headers_arg(args.get(1), what)?,
+                    body: None,
+                },
+            }),
+            AsyncKind::HttpPost => Ok(ada_net::NetOp::Http {
+                request: ada_net::HttpRequest {
+                    method: ada_net::HttpMethod::Post,
+                    url: string_at(0)?,
+                    headers: net_headers_arg(args.get(2), what)?,
+                    body: Some(bytes_at(1)?),
+                },
+            }),
+            AsyncKind::HttpRequest => {
+                let method_text = string_at(0)?;
+                let method = ada_net::HttpMethod::parse(&method_text).ok_or_else(|| {
+                    VmError::TypeError(format!(
+                        "http.request: unsupported method '{method_text}' \
+                         (use GET/POST/PUT/PATCH/DELETE/HEAD)"
+                    ))
+                })?;
+                let body = match args.get(2) {
+                    None | Some(Value::Nil) => None,
+                    Some(Value::String(_)) => Some(bytes_at(2)?),
+                    other => {
+                        return Err(VmError::TypeError(format!(
+                            "http.request expects a string body at argument 3, got {}",
+                            describe_value(other)
+                        )))
+                    }
+                };
+                Ok(ada_net::NetOp::Http {
+                    request: ada_net::HttpRequest {
+                        method,
+                        url: string_at(1)?,
+                        headers: net_headers_arg(args.get(3), what)?,
+                        body,
+                    },
+                })
+            }
+            other => Err(VmError::TypeError(format!(
+                "{} is not a network operation",
+                other.name()
+            ))),
+        }
+    }
+
+    /// 网络操作结果 → 脚本值。
+    fn net_reply_to_value(&mut self, reply: ada_net::NetReply) -> Result<Value, VmError> {
+        match reply {
+            ada_net::NetReply::Connected { handle, peer } => {
+                Ok(crate::builtins::net::tcp_connection(handle, peer))
+            }
+            ada_net::NetReply::Bound { handle, local } => {
+                Ok(crate::builtins::net::udp_socket(handle, local))
+            }
+            // EOF 读作 `nil`——与"越界读返回 nil"的既有口径一致，脚本用 `??` 处理即可。
+            ada_net::NetReply::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return Ok(Value::Nil);
+                }
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                self.charge(text.len())?;
+                Ok(Value::string(text))
+            }
+            ada_net::NetReply::Written(count) => Ok(Value::Int(count as i64)),
+            ada_net::NetReply::Closed => Ok(Value::Bool(true)),
+            ada_net::NetReply::Datagram { data, from } => {
+                let text = String::from_utf8_lossy(&data).to_string();
+                self.charge(text.len())?;
+                let mut map = std::collections::HashMap::new();
+                map.insert("data".to_string(), Value::string(text));
+                // 字段名用 `sender` 而不是 `from`：`from` 是 `import ... from` 引入的
+                // 保留字，`got.from` 无法通过字段访问的语法（实测报 "expected field name"）。
+                map.insert("sender".to_string(), Value::string(from));
+                Ok(Value::map(map))
+            }
+            ada_net::NetReply::HttpResponse(response) => {
+                self.charge(response.body.len())?;
+                Ok(http_response_value(response))
+            }
+        }
+    }
+
+    /// 收取所有已到达的网络完成事件，并把对应任务放回就绪队列。
+    fn drain_net_completions(&mut self) {
+        let mut arrived = Vec::new();
+        if let Some(net) = self.net.as_ref() {
+            while let Some(item) = net.try_take() {
+                arrived.push(item);
+            }
+        }
+        for (op, result) in arrived {
+            self.io_results
+                .insert(op, result.map_err(|err| err.to_string()));
+            if let Some(index) = self.io_waiters.iter().position(|(waiter, _)| *waiter == op) {
+                let (_, task) = self.io_waiters.remove(index);
+                self.wake_waiter(task);
+            }
+        }
+    }
+
+    /// 是否还有任务在等网络事件（调度器据此决定"能不能判定死锁"）。
+    fn has_pending_io(&self) -> bool {
+        !self.io_waiters.is_empty() || self.net.as_ref().is_some_and(|net| net.has_completions())
+    }
+
     /// 指令循环里的异步内建调用（可以挂起）。
-    fn handle_async_call(
-        &mut self,
+    fn handle_async_call(        &mut self,
         kind: AsyncKind,
         args: Vec<Value>,
         dst_reg: usize,
     ) -> Result<AsyncOutcome, VmError> {
+        // M9：网络操作与 `sleep_ms` 同构——能挂起就挂起，不能挂起就退化为阻塞。
+        if kind.is_network() {
+            let op = self.build_net_op(kind, &args)?;
+            let op_id = self.net_runtime()?.submit(op);
+            if self.request_suspend(Suspend::Io { op: op_id }) {
+                self.pending_resume = Some(PendingResume {
+                    dst: Some(dst_reg),
+                    source: ResumeSource::Io { op: op_id },
+                });
+                return Ok(AsyncOutcome::Suspended);
+            }
+            // 适配器回调内（`rust_depth > 0`）：无法保存宿主栈，同步跑完这次操作。
+            let outcome = self
+                .net_runtime()?
+                .await_op(op_id)
+                .map_err(|err| VmError::NativeError(err.to_string()));
+            let value = match outcome {
+                Ok(reply) => self.net_reply_to_value(reply)?,
+                Err(err) => return Err(err),
+            };
+            self.registers[dst_reg] = value;
+            return Ok(AsyncOutcome::Written);
+        }
+
         match kind {
+            // 网络 kinds 已在函数开头提前返回，这些分支不可达——但必须写出来让 match
+            // 穷尽（用错误而不是 `unreachable!()`：不新增 panic 路径，见计划 §5.3）。
+            AsyncKind::TcpConnect
+            | AsyncKind::TcpRead
+            | AsyncKind::TcpWrite
+            | AsyncKind::TcpClose
+            | AsyncKind::UdpBind
+            | AsyncKind::UdpSendTo
+            | AsyncKind::UdpRecvFrom
+            | AsyncKind::UdpClose
+            | AsyncKind::HttpGet
+            | AsyncKind::HttpPost
+            | AsyncKind::HttpRequest => Err(VmError::TypeError(format!(
+                "internal error: {} reached the non-network path",
+                kind.name()
+            ))),
             AsyncKind::Sleep | AsyncKind::YieldNow => {
                 let ms = if kind == AsyncKind::YieldNow {
                     0

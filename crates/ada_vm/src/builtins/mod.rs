@@ -1,8 +1,10 @@
 pub mod core;
 pub mod crypto;
 pub mod fs;
+pub mod http;
 pub mod json;
 pub mod math;
+pub mod net;
 pub mod sys;
 pub mod time;
 
@@ -86,6 +88,15 @@ pub fn std_module(name: &str, sandbox: &Sandbox) -> StdModule {
             // 无根目录：`fs` 不可用，与「未知模块」同义（既有行为）。
             None => return StdModule::Unknown,
         },
+        // M9 / D13：与 `fs` 同构——没有宿主授予的策略就没有网络模块。
+        "net" => match sandbox.net_policy.is_some() {
+            true => net::create_net_module(),
+            false => return StdModule::Unknown,
+        },
+        "http" => match sandbox.net_policy.is_some() {
+            true => http::create_http_module(),
+            false => return StdModule::Unknown,
+        },
         _ => return StdModule::Unknown,
     };
     StdModule::Available(value)
@@ -95,6 +106,6 @@ pub fn std_module(name: &str, sandbox: &Sandbox) -> StdModule {
 fn is_known_module(name: &str) -> bool {
     matches!(
         name,
-        "json" | "math" | "crypto" | "time" | "sys" | "env" | "fs"
+        "json" | "math" | "crypto" | "time" | "sys" | "env" | "fs" | "net" | "http"
     )
 }

@@ -174,6 +174,24 @@ pub enum AsyncKind {
     TaskCancel,
     /// `timeout(task, ms)` / `task.timeout(ms)`：超时取消并返回 `nil`（T4.5）
     Timeout,
+    /// 网络操作（M9）：全部是**真正的挂起点**。句柄以接收者形式携带，见 `builtins/net.rs`。
+    ///
+    /// 这些 `AsyncKind` **从不注册为全局名**——只能通过 `net`/`http` 模块返回的句柄 map
+    /// 取得。脚本没有任何字面量能构造 `Value::Async`，因此**句柄不可伪造**：拿不到别人的
+    /// 连接去读写。
+    TcpConnect,
+    TcpRead,
+    TcpWrite,
+    TcpClose,
+    UdpBind,
+    UdpSendTo,
+    UdpRecvFrom,
+    UdpClose,
+    /// HTTP 入口按**实参形状**区分，因此不能共用一个 kind：
+    /// `get(url[, headers])` 与 `post(url, body[, headers])` 在 1–2 个实参时会撞车。
+    HttpGet,
+    HttpPost,
+    HttpRequest,
 }
 
 impl AsyncKind {
@@ -185,7 +203,36 @@ impl AsyncKind {
             AsyncKind::AwaitAny => "await_any",
             AsyncKind::TaskCancel => "cancel",
             AsyncKind::Timeout => "timeout",
+            AsyncKind::TcpConnect => "tcp_connect",
+            AsyncKind::TcpRead => "tcp_read",
+            AsyncKind::TcpWrite => "tcp_write",
+            AsyncKind::TcpClose => "tcp_close",
+            AsyncKind::UdpBind => "udp_bind",
+            AsyncKind::UdpSendTo => "udp_send_to",
+            AsyncKind::UdpRecvFrom => "udp_recv_from",
+            AsyncKind::UdpClose => "udp_close",
+            AsyncKind::HttpGet => "http_get",
+            AsyncKind::HttpPost => "http_post",
+            AsyncKind::HttpRequest => "http_request",
         }
+    }
+
+    /// 该操作是否是网络 I/O（决定它走 `ada_net` 而不是 `call_async_blocking`）。
+    pub fn is_network(self) -> bool {
+        matches!(
+            self,
+            AsyncKind::TcpConnect
+                | AsyncKind::TcpRead
+                | AsyncKind::TcpWrite
+                | AsyncKind::TcpClose
+                | AsyncKind::UdpBind
+                | AsyncKind::UdpSendTo
+                | AsyncKind::UdpRecvFrom
+                | AsyncKind::UdpClose
+                | AsyncKind::HttpGet
+                | AsyncKind::HttpPost
+                | AsyncKind::HttpRequest
+        )
     }
 }
 

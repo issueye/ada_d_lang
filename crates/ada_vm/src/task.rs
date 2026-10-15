@@ -173,6 +173,10 @@ pub enum Suspend {
     },
     /// 等待某个任务结算，或到 deadline 时超时（T4.5）
     Timeout { target: TaskId, deadline_ms: u64 },
+    /// 等待一次网络操作完成（M9）。完成事件由 `ada_net` 的驱动线程回投，
+    /// VM 在空闲等待时收取（见 `Vm::run_scheduler`）。结果本身放在 VM 的
+    /// `io_results` 里，恢复阶段再取——完成事件是**一次性**的，不适合塞进现场里。
+    Io { op: ada_net::OpId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +207,10 @@ pub enum ResumeSource {
     AwaitAny(Vec<TaskId>),
     /// `timeout(task, ms)`：任务先结算则写回其值，超时则取消任务并写回 `nil`
     Timeout(TaskId),
+    /// 网络操作（M9）：写回该操作的结果。
+    ///
+    /// 这里只记 `op`；结果通过 `Vm::io_results` 查（见该字段的注释）。
+    Io { op: ada_net::OpId },
 }
 
 /// 一个任务的执行现场。

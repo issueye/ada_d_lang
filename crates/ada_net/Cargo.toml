@@ -19,3 +19,5 @@ bytes = "1"
 url = "2"
 
 [dev-dependencies]
+# 仅测试用：解析仓库里的自签测试证书（生产路径不解析 PEM）
+rustls-pemfile = "2"

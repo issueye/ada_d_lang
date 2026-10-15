@@ -89,8 +89,20 @@ pub struct NetRuntime {
 }
 
 impl NetRuntime {
-    /// 启动驱动线程与 Tokio 运行时。
+    /// 启动驱动线程与 Tokio 运行时（使用默认 TLS 配置：webpki 根证书 + ring 后端）。
     pub fn new(policy: Arc<NetPolicy>) -> Result<Self, NetError> {
+        Self::with_tls_config(policy, crate::tls_client_config())
+    }
+
+    /// 使用宿主提供的 TLS 配置启动。
+    ///
+    /// 宿主需要信任**私有 CA**（企业内网、自签证书）时必须走这个入口：默认配置只信任
+    /// webpki 的公共根证书集。测试同样用它信任自签的测试证书——**不给**策略加
+    /// "跳过证书校验"的开关，那种开关一旦存在就会被误用。
+    pub fn with_tls_config(
+        policy: Arc<NetPolicy>,
+        tls: Arc<rustls::ClientConfig>,
+    ) -> Result<Self, NetError> {
         let (handle_tx, handle_rx) = std::sync::mpsc::channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -125,7 +137,7 @@ impl NetRuntime {
         Ok(Self {
             policy,
             handle,
-            state: exec::SharedState::new(),
+            state: exec::SharedState::new(tls),
             completions: Arc::new(CompletionQueue::default()),
             next_op: AtomicU64::new(1),
             shutdown: Some(shutdown_tx),
@@ -138,16 +150,47 @@ impl NetRuntime {
     }
 
     /// 提交一个操作，立即返回其 id（不阻塞）。
+    ///
+    /// **保证**：每个提交的操作都会在 `NetPolicy::operation_budget()` 内产生**恰好一个**
+    /// 完成事件。VM 的调度器依赖这条保证来判定"还有没有活着的网络等待"——没有它，
+    /// "操作永远不结算"就会变成宿主线程死锁，而不是一次有界失败。
     pub fn submit(&self, op: NetOp) -> OpId {
         let op_id = self.next_op.fetch_add(1, Ordering::Relaxed);
         let completions = Arc::clone(&self.completions);
         let policy = Arc::clone(&self.policy);
         let state = self.state.clone();
+        let budget = self.policy.operation_budget();
         self.handle.spawn(async move {
-            let result = exec::execute(op, policy, state).await;
+            // 整体上界：覆盖 DNS 解析、连接、读写、读响应体等所有步骤。
+            let result = match tokio::time::timeout(
+                budget,
+                exec::execute(op, Arc::clone(&policy), state),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(NetError::Timeout(budget)),
+            };
             completions.push(op_id, result);
         });
         op_id
+    }
+
+    /// 等待**指定**操作的完成事件（其余事件留在队列里等 VM 收）。
+    ///
+    /// 用于无法挂起的上下文（适配器回调内）。因为 `submit` 保证有界结算，这里只需要
+    /// 用一个略大于上界的兜底时长，超时即视为运行时异常。
+    pub fn await_op(&self, op: OpId) -> Result<NetReply, NetError> {
+        let deadline = Instant::now() + self.policy.operation_budget() + Duration::from_secs(1);
+        loop {
+            if let Some(result) = self.completions.try_take_matching(op) {
+                return result;
+            }
+            if Instant::now() >= deadline {
+                return Err(NetError::Timeout(self.policy.operation_budget()));
+            }
+            self.completions.wait_until(Some(deadline));
+        }
     }
 
     /// 非阻塞收取一个完成事件。
@@ -175,17 +218,7 @@ impl NetRuntime {
     /// 用于无法挂起的上下文（迭代器适配器回调内，`rust_depth > 0`，见 SPEC_ASYNC §4.3）。
     /// 期间其它操作的完成事件会留在队列里，不会被丢弃。
     pub fn run_blocking(&self, op: NetOp) -> Result<NetReply, NetError> {
-        let op_id = self.submit(op);
-        let deadline = Instant::now() + self.policy.io_timeout() + self.policy.connect_timeout();
-        loop {
-            if let Some(result) = self.completions.try_take_matching(op_id) {
-                return result;
-            }
-            if Instant::now() >= deadline {
-                return Err(NetError::Timeout(self.policy.io_timeout()));
-            }
-            self.completions.wait_until(Some(deadline));
-        }
+        self.await_op(self.submit(op))
     }
 }
 

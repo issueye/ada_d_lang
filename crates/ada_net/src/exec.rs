@@ -25,20 +25,28 @@ struct Table {
     next_handle: Handle,
 }
 
-/// 由 `NetRuntime` 与各操作共享的连接表。
-#[derive(Clone, Default)]
+/// 由 `NetRuntime` 与各操作共享的连接表 + TLS 配置。
+#[derive(Clone)]
 pub struct SharedState {
     inner: Arc<Mutex<Table>>,
+    /// 客户端 TLS 配置（含信任根）。宿主可以注入自带 CA 的配置（企业私有 CA 场景），
+    /// 测试也靠它信任自签证书。
+    tls: Arc<rustls::ClientConfig>,
 }
 
 impl SharedState {
-    pub fn new() -> Self {
+    pub fn new(tls: Arc<rustls::ClientConfig>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Table {
                 conns: HashMap::new(),
                 next_handle: 1,
             })),
+            tls,
         }
+    }
+
+    pub fn tls(&self) -> &Arc<rustls::ClientConfig> {
+        &self.tls
     }
 
     fn insert(&self, conn: Conn) -> Handle {
@@ -86,7 +94,7 @@ pub async fn execute(
             udp_recv_from(handle, max_bytes, &policy, &state).await
         }
         NetOp::UdpClose { handle } => udp_close(handle, &state),
-        NetOp::Http { request } => crate::http::execute(request, &policy).await,
+        NetOp::Http { request } => crate::http::execute(request, &policy, state.tls()).await,
     }
 }
 

@@ -79,6 +79,17 @@ pub struct Sandbox {
     /// **默认为空**，即维持 D12 现状（导入即可用）。宿主可借此在保留
     /// 「显式导入」语义的同时，收回对特定模块的最终控制权。
     pub denied_modules: Vec<String>,
+    /// 网络授权策略（`None` = **不暴露 `net` / `http` 模块**）。M9 / 决策 D13。
+    ///
+    /// 与 `fs_root` 同构：这是宿主显式授予的能力，默认**不存在**。策略本体
+    /// （主机白名单、硬超时、载荷上限、重定向策略、私有地址开关）定义在
+    /// `ada_net::NetPolicy` 中；沙箱只负责"给不给"，不重复实现判定。
+    pub net_policy: Option<std::sync::Arc<ada_net::NetPolicy>>,
+    /// 网络客户端 TLS 配置（`None` = 用默认：webpki 公共根证书 + ring 后端）。
+    ///
+    /// 宿主需要信任**私有 CA**（企业内网、自签证书）时在此注入。刻意**不提供**
+    /// "跳过证书校验"的开关——那种开关一旦存在就会被误用。
+    pub net_tls: Option<std::sync::Arc<ada_net::rustls::ClientConfig>>,
 }
 
 impl Default for Sandbox {
@@ -103,6 +114,8 @@ impl Sandbox {
             fuel: None,
             fs_root: None,
             denied_modules: Vec::new(),
+            net_policy: None,
+            net_tls: None,
         }
     }
 
@@ -121,6 +134,8 @@ impl Sandbox {
             fuel: None,
             fs_root: None,
             denied_modules: Vec::new(),
+            net_policy: None,
+            net_tls: None,
         }
     }
 
@@ -139,6 +154,8 @@ impl Sandbox {
             fuel: None,
             fs_root: None,
             denied_modules: Vec::new(),
+            net_policy: None,
+            net_tls: None,
         }
     }
 
@@ -224,6 +241,56 @@ impl Sandbox {
         self
     }
 
+    /// 授予网络能力（M9 / 决策 D13）：传入完整策略后，`net` 与 `http` 模块才存在。
+    ///
+    /// 这是**唯一**的授权入口——与 `fs` 一样，"能力"必须由宿主显式给出，profile
+    /// 本身从不开网络。策略本体见 `ada_net::NetPolicy`。
+    pub fn with_net_policy(mut self, policy: ada_net::NetPolicy) -> Self {
+        self.kind = ProfileKind::Custom;
+        self.net_policy = Some(std::sync::Arc::new(policy));
+        self
+    }
+
+    /// 便捷入口：放行一组主机规则（`host` / `host:port` / `*.suffix` / `*`）后授予网络。
+    ///
+    /// 其余参数走 `NetPolicy` 的默认值（连接/读写各 10s、载荷 1 MiB、不跟随重定向、
+    /// 拒绝私有地址、不允许绑定本地端口）。需要更细的控制请直接用
+    /// [`Sandbox::with_net_policy`]。
+    pub fn with_net_allowed_hosts<I, S>(self, hosts: I) -> Result<Self, ada_net::NetError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let policy = ada_net::NetPolicy::new().allow_hosts(hosts)?;
+        Ok(self.with_net_policy(policy))
+    }
+
+    /// 收回网络能力（默认行为）。
+    pub fn without_net(mut self) -> Self {
+        self.kind = ProfileKind::Custom;
+        self.net_policy = None;
+        self.net_tls = None;
+        self
+    }
+
+    /// 注入网络客户端的 TLS 配置（信任根 / ALPN 偏好）。
+    ///
+    /// 用于宿主需要信任**私有 CA** 的场景：默认配置只信任 webpki 的公共根证书集。
+    /// 必须与 [`Sandbox::with_net_policy`] 一起用（没有网络授权时该配置无效）。
+    pub fn with_net_tls_config(
+        mut self,
+        config: std::sync::Arc<ada_net::rustls::ClientConfig>,
+    ) -> Self {
+        self.kind = ProfileKind::Custom;
+        self.net_tls = Some(config);
+        self
+    }
+
+    /// 当前是否已授予网络能力。
+    pub fn net_granted(&self) -> bool {
+        self.net_policy.is_some()
+    }
+
     /// 全局否决一个内置模块（D12 安全缓解，T8.15）：即使脚本显式
     /// `import X from "std:X"` 也会被拒绝。
     ///
@@ -269,6 +336,8 @@ impl Sandbox {
             "sys" => self.allow_sys,
             "sleep_ms" => self.allow_sleep,
             "fs" => self.fs_root.is_some(),
+            // M9 / D13：网络与 fs 同构——没有宿主授予的策略就不存在。
+            "net" | "http" => self.net_policy.is_some(),
             _ => true,
         }
     }

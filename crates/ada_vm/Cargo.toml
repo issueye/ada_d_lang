@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 ada_ast = { path = "../ada_ast" }
 ada_bytecode = { path = "../ada_bytecode" }
+ada_net = { path = "../ada_net" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
