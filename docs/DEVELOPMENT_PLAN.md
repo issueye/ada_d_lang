@@ -328,7 +328,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 ---
 
-### M9 · 网络能力（TCP / UDP / HTTP / HTTPS）🚧
+### M9 · 网络能力（TCP / UDP / HTTP / HTTPS）✅
 
 **前置决策**：D13（提供受沙箱管控的网络能力，**推翻 D9**）与 D14（Tokio 只承载 I/O，字节码仍单线程，**修订 D2**）。
 
@@ -336,13 +336,14 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 
 | ID | 任务 | 优先级 | 涉及文件 | 验收 / 完成证据 |
 | :--- | :--- | :--- | :--- | :--- |
-| 🚧 T9.1 | `ada_net` crate：策略、运行时、TCP/UDP、HTTP/1.1+HTTP/2 + TLS(ring) | P0 | `crates/ada_net/**` | 26 个用例（15 单元 + 11 集成，全 hermetic loopback）：白名单/端口/私有地址/通配符语义、超时、载荷上限、重定向默认不跟随 + 每跳重过白名单 + 禁降级、UDP 绑定开关、`run_blocking` 不吞其它完成事件 |
-| 📋 T9.2 | `Sandbox::with_net_policy` + `net` 模块（TCP/UDP），网络调用接入 `AsyncKind` 挂起 | P0 | `ada_vm/src/{sandbox,value,vm,task}.rs`、`builtins/{mod,net}.rs` | 待补 |
-| 📋 T9.3 | `http` 模块（`get`/`post`/`request`），h1/h2 | P0 | `builtins/http.rs` | 待补 |
-| 📋 T9.4 | CLI：`--net-allow` / `--net-timeout-ms` / `--net-max-bytes` 等 | P1 | `ada_cli/src/main.rs` | 待补 |
-| 📋 T9.5 | 文档：SPEC_STDLIB §3.7/§3.8、SPEC_RUNTIME §10、SPEC_ASYNC §4.3、AI_GUIDE §9、CHANGELOG | P1 | `docs/**`、`CHANGELOG.md` | 待补 |
+| ✅ T9.1 | `ada_net` crate：策略、运行时、TCP/UDP、HTTP/1.1+HTTP/2 + TLS(ring) | P0 | `crates/ada_net/**` | 完成证据：**29 个用例**（18 单元 + 11 集成，全 hermetic loopback）：白名单/端口/通配符/裸 IPv6 与非法端口语义、私有地址拒绝、超时、载荷上限、重定向默认不跟随 + 每跳重过白名单 + 禁降级、UDP 绑定开关、`run_blocking` 不吞其它完成事件。P0 闸门另有 2 例证明 `ring` 在本机 MSVC 上**链接并执行**（安全随机源）、hyper+tokio 往返可用 |
+| ✅ T9.2 | `Sandbox::with_net_policy` + `net` 模块（TCP/UDP），网络调用接入 `AsyncKind` 挂起 | P0 | `ada_vm/src/{sandbox,value,vm,task}.rs`、`builtins/{mod,net}.rs`、`ada_cli/src/main.rs` | 完成证据：默认无网络（`import net` → `Unknown`、裸 `net` → `CapabilityDenied`）、`with_denied_module` 仍优先；TCP 往返/EOF 为 `nil`、UDP send/recv、适配器回调内降级为阻塞且结果正确。**挂起语义有实测**：两个并发请求对 300ms 延迟的服务端总耗时 < 600ms（重叠）；网络等待计入墙钟预算。测试：`net_sandbox.rs` 13 例 + `net_cli.rs` 6 例 |
+| ✅ T9.3 | `http` 模块（`get`/`post`/`request`），h1/h2 + TLS | P0 | `builtins/http.rs`、`crates/ada_net/tests/https.rs` | 完成证据：响应 map（`status`/`ok`/`body`/`headers`/`protocol`/`url`/`len`）、响应体上限报错、重定向策略；**HTTPS 此前从未执行过**，本任务补齐：ALPN 协商出 `h2`、服务端仅 h1 时回落、自签证书被默认信任集拒绝、注入私有 CA 后成功（`https.rs` 3 例 + `net_sandbox.rs` 2 例互为对照） |
+| ✅ T9.4 | CLI：`--net-allow` / `--net-timeout-ms` / `--net-max-bytes` / `--net-max-redirects` / `--net-allow-private` / `--net-allow-bind` | P1 | `ada_cli/src/main.rs`、`tests/net_cli.rs` | 完成证据：不给 `--net-allow` 时模块不可用；非法规则是清晰的参数错误；白名单外主机与私有地址段分别被拒（6 例） |
+| ✅ T9.5 | 文档：SPEC_STDLIB §3.7/§3.8、SPEC_RUNTIME §7.1/§10.1/§10.2、SPEC_ASYNC §4.3/§4.4/§5.5/§6、AI_GUIDE §9、CHANGELOG | P1 | `docs/**`、`CHANGELOG.md` | 完成证据：本轮文档提交；文档门禁（doc_links / doc_task_status / docs_site / ai_guide）全绿 |
+| 📋 T9.6 | `http` 响应体的**原始字节**访问（二进制下载） | P2 | `ada_vm/src/builtins/http.rs`、`crates/ada_net/src/http.rs` | 当前 `body` 是 UTF-8 字符串，非 UTF-8 字节被替换（缺口 G-S14）。需要给出不复制整份字节的访问方式（如 `body_bytes` 或 `save_to` 流式落盘），并保持载荷上限语义 |
 
-**退出标准**：未授予网络时 `import http from "std:http"` 失败（unknown），裸 `net`/`http` 报 `CapabilityDenied`；授予后能对 loopback 完成 TCP/UDP/HTTP 往返；网络调用在 `spawn` 下可被其它任务交错；`cargo test --workspace` 全绿。
+**退出标准**：✅ 达成 —— 未授予网络时 `import http from "std:http"` 失败（unknown），裸 `net`/`http` 报 `CapabilityDenied`；授予后 TCP/UDP/HTTP/HTTPS 均可对 loopback 完成往返（含 ALPN 协商出 HTTP/2）；网络调用在 `spawn` 下可被其它任务交错；`cargo test --workspace` 除一项**既存**失败（`security.rs::hostile_scripts_...`，M6 计费口径变更后未同步，见 §13）外全绿。
 
 ---
 
@@ -383,6 +384,7 @@ cargo run -p ada_cli -- -e "let arr = [10, 20, 30]; arr |> sum()"
 | `0.1.0` | 最初原型（前端 + VM + Fuel + 嵌入 API） | 基线 |
 | `0.2.0` | M0–M7 成果（稳健性/语义/并发/沙箱/性能/工具链）+ §13 缺口收尾 | M0–M7 |
 | `0.3.0` | 模块系统与结构化数据（文件 import + 内置模块显式导入 + struct 惯用法）——**含破坏性变更** | M8 |
+| `0.4.0` | 网络能力（TCP/UDP/HTTP/HTTPS，默认拒绝 + 沙箱授权；引入 `ada_net`，Tokio 只承载 I/O） | M9 |
 | `1.0.0` | API 冻结、生态成熟 | — |
 
 发布条件：该里程碑全部 P0/P1 任务 ✅；golden 测试通过；`CHANGELOG.md` 更新；文档状态标注同步。
@@ -491,6 +493,7 @@ docs/
 | M6 性能与 JIT | 3–6 周 | ✅ | ☑（T6.1/T6.2/T6.3/T6.5 完成，≈−29% 平均；T6.4 JIT 延后并记录理由） |
 | M7 生态工具链 | 长期 | ✅ | ☑（T7.1–T7.5 全部完成；`http` 按 D9 明确不做） |
 | M8 模块系统与结构化数据 | 2–3 周 | ✅ | ☑（T8.6–T8.18 全部完成；文件 import + 内置模块显式导入（破坏性）+ struct 惯用法） |
+| M9 网络能力 | 1–2 周 | ✅ | ☑（T9.1–T9.5 完成；TCP/UDP/HTTP/HTTPS 默认拒绝、挂起点语义、CLI 与文档齐备；T9.6 二进制响应体为后续） |
 
 **更新方式**：任务状态变更直接编辑 §4 对应行；里程碑状态与"退出标准达成"勾选在 §12 汇总；每次更新必须与代码改动同 commit。
 
@@ -510,6 +513,8 @@ M0–M7 完成后，仍**真实存在**的缺口集中在这里（其余历史�
 | ✅ T8.4 | **复合赋值对字段/索引/全局生效**（本轮发现并修复） | P1 | `ada_bytecode` | 完成证据：`cfg.n += 41` 曾得到 `41`、`a[0] += 41` 得到 `41`、计数器 `m.k += 1` 五次仍为 `1` —— 编译器在字段/索引/全局分支丢弃了复合运算符，直接写入 RHS（局部变量与闭包 upvalue 一直正确，所以测试与示例都没暴露）。现在三个分支都先读回当前值再应用运算；缺失字段做复合赋值报 `Cannot add nil and 1` 而不是静默成功。测试：`semantics.rs::compound_assignment_honours_the_operator_for_every_target_kind`（含全部 5 个复合运算符与字符串拼接） |
 | 📋 T8.5 | 被捕获顶层变量的全局镜像同步（缺口 G-L16） | P3 | `ada_engine`, `ada_bytecode`, `ada_vm` | 仍开放，**触发条件已精确化（本轮核实）**：只有"顶层声明与捕获它的闭包在**同一编译单元**"时才分叉——闭包持有局部 `Cell`，全局槽存声明时刻的快照（实测：`inc()` 后闭包内部为 1 而全局仍为 0；宿主写 `c = 100` 后闭包仍从 2 加到 3）。**逐行 REPL 输入不分叉**（闭包里的名字编译为全局名）。修复方案：被捕获的顶层绑定在全局槽里保存 Cell（`GetGlobal`/`SetGlobal` 穿透 Cell），宿主 `get_global` 保持返回普通值。复现与保护用例见 `crates/ada_engine/tests/captured_top_level_mirror.rs`（2 例：一个记录现状，一个保护 REPL 形状不回归） |
 | 📋 T6.4 | `ada_jit` crate：字节码 → Cranelift IR 下沉，热点计数与 guard/deopt | P3 | `crates/ada_jit/`（新） | 唯一未启动的**计划内**任务（M6 延后项）。验收线：`fib(30)` 较 VM 提速 ≥10×；基准与指令数门禁已就绪可直接对标 |
+| 📋 T9.7 | `security.rs::hostile_scripts_...` 的期望与 M6 后的计费口径不一致 | P2 | `crates/ada_engine/tests/security.rs` | **既存失败**（与 M9 无关，在 M9 之前的提交上同样红）。T6.2 把字符串 `+` 的计费从"整串长度"改为"增量"（否则 `s += x` 循环二次方消耗预算、误杀正常脚本），该用例仍按旧语义期待 `s += "x"` 十万次越限——实际总增量 10 万字节 < 256 KiB，**合法通过**。修法：把用例参数改成真正会越限的形状，或断言新语义。同文件 `memory_limit_rejects_string_amplification` 用的是会越限的形状，因此一直是绿的 |
+| 📋 T9.8 | 插值（`StringConcat`）仍按**整串长度**计费，与 `+` 的增量口径不一致 | P2 | `crates/ada_vm/src/vm.rs` | 实测（256 KiB 预算、追加 10 字节 × 20000 次）：`s += "0123456789"` 通过（总增量 200 KB），`s = $"{s}0123456789"` 报 263,350 > 262,144。同一逻辑操作因写法不同而预算结局不同，且插值路径保留了 T6.2 判定为"误杀正常脚本"的二次方语义 |
 
 > **不打算做的**（避免每次复核都重新讨论）：
 > - `a = b = c` 链式赋值：保留"报 `invalid assignment target`"的明确错误（❌ 无计划）。

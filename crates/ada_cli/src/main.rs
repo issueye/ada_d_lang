@@ -1,5 +1,5 @@
 use ada_bytecode::Compiler;
-use ada_engine::{Engine, Sandbox};
+use ada_engine::{Engine, NetPolicy, Sandbox};
 use ada_parser::Parser;
 use clap::{Parser as ClapParser, Subcommand};
 use rustyline::error::ReadlineError;
@@ -37,6 +37,31 @@ struct Cli {
     /// Allow file imports, restricted to this directory (T8.9)
     #[arg(long = "import-root", global = true, value_name = "DIR")]
     import_root: Option<PathBuf>,
+
+    /// Grant network access to these hosts, e.g. `--net-allow api.example.com,*.internal:8443`
+    /// (spec: `host`, `host:port`, `*.suffix`, `*`). Omitting it leaves `net`/`http` unavailable (T9.4)
+    #[arg(long = "net-allow", global = true, value_name = "HOSTS", value_delimiter = ',')]
+    net_allow: Option<Vec<String>>,
+
+    /// Per-network-operation timeout in milliseconds (connect and each read/write)
+    #[arg(long = "net-timeout-ms", global = true, value_name = "MS", default_value_t = 10_000)]
+    net_timeout_ms: u64,
+
+    /// Maximum payload size in bytes for a network response or datagram (default 1 MiB)
+    #[arg(long = "net-max-bytes", global = true, value_name = "BYTES", default_value_t = 1024 * 1024)]
+    net_max_bytes: usize,
+
+    /// Follow up to N redirects (0 = never follow; each hop is re-checked against --net-allow)
+    #[arg(long = "net-max-redirects", global = true, value_name = "N", default_value_t = 0)]
+    net_max_redirects: u32,
+
+    /// Also allow private/loopback address ranges (off by default; useful for local servers)
+    #[arg(long = "net-allow-private", global = true)]
+    net_allow_private: bool,
+
+    /// Also allow binding a local UDP port
+    #[arg(long = "net-allow-bind", global = true)]
+    net_allow_bind: bool,
 }
 
 #[derive(Subcommand)]
@@ -77,6 +102,27 @@ fn main() {
     // T7.5：只有显式给出 `--fs-root` 才暴露 fs 模块，且限制在该目录内
     let sandbox = match &cli.fs_root {
         Some(root) => sandbox.with_fs_root(root),
+        None => sandbox,
+    };
+    // M9（决策 D13）：网络同样默认不存在——只有 `--net-allow` 才授予，且逐条受策略约束。
+    let sandbox = match &cli.net_allow {
+        Some(hosts) => {
+            let policy = NetPolicy::new()
+                .allow_hosts(hosts.iter().map(String::as_str))
+                .map_err(|err| format!("invalid --net-allow rule: {err}"))
+                .unwrap_or_else(|message| {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                });
+            let policy = policy
+                .with_connect_timeout(std::time::Duration::from_millis(cli.net_timeout_ms))
+                .with_io_timeout(std::time::Duration::from_millis(cli.net_timeout_ms))
+                .with_max_payload_bytes(cli.net_max_bytes)
+                .with_max_redirects(cli.net_max_redirects)
+                .allow_private_addresses(cli.net_allow_private)
+                .allow_bind(cli.net_allow_bind);
+            sandbox.with_net_policy(policy)
+        }
         None => sandbox,
     };
 

@@ -29,7 +29,7 @@
 | 命令行 | `ada_cli` | ✅（`run` / `-e` / `dump` / `repl`） |
 | JIT | — | 📋（T6.4，尚无 crate） |
 
-**设计约束**：依赖方向单向 `ast ← lexer ← parser ← bytecode ← vm ← engine ← cli`，禁止反向依赖（`ada_vm` 仅在 dev-dependencies 依赖 `ada_parser` 供测试）。
+**设计约束**：依赖方向单向 `ast ← lexer ← parser ← bytecode ← net ← vm ← engine ← cli`，禁止反向依赖（`ada_vm` 仅在 dev-dependencies 依赖 `ada_parser` 供测试）。`ada_net` 是 M9 引入的网络传输层（TCP/UDP/HTTP + TLS），**不依赖 `ada_vm`**，因此 hyper/tokio/rustls 的类型不会渗进 VM 的核心文件。
 
 ---
 
@@ -291,6 +291,10 @@ struct Vm {
 | 并发任务数 | `max_tasks` | strict 128 / standard 512 | `spawn` 时统计存活任务；每次 spawn 另计入内存 |
 | 调用栈深度 | 固定 | 512 帧 | 既有 |
 | 每帧寄存器数 | 固定 | 10,000 | 既有 |
+| 网络连接/读写 | `NetPolicy`（连接超时、读写超时） | 各 10 s（需宿主授权网络，M9/T9.2） | `ada_net`：连接与单次读写各包一层 `timeout`；另对所有操作整体包一层上界，保证**每个操作有限时间内结算** |
+| 网络载荷 | `NetPolicy::max_payload_bytes` | 1 MiB | 响应体**前检查**后失败；UDP 数据报与写入缓冲同受此限 |
+| 网络重定向 | `NetPolicy::max_redirects` | **0（不跟随）** | 每一跳重新过主机白名单；禁止 `https → http` 降级 |
+| 网络地址范围 | `NetPolicy::allow_private_addresses` | `false`（拒绝私有/保留段） | 解析后逐地址校验；连接用的是校验过的 `SocketAddr`（防 DNS rebinding） |
 
 | 能力 | 状态 | 说明 |
 | :--- | :--- | :--- |
@@ -490,9 +494,9 @@ fn main() -> Result<(), ada_engine::Error> {
 | `env` 读取（D12） | `import env` 即**完全授权**：可读全部键（等价 `create_env_module(None)`）；旧白名单路径保留于 `Sandbox`（供 `register_all` 的历史路径），但默认注册已移除 | `builtins::std_module` |
 | 宿主全局否决（T8.15） | `Sandbox::with_denied_module(name)` / `with_denied_modules([...])` 可**全局否决**某内置模块：即使脚本显式 `import X from "std:X"` 也报 `CapabilityDenied { name, profile }`。**默认空**（维持 D12 现状）。未知模块名仍报 `TypeError`，与「被否决」可区分 | `builtins::std_module`（返回 `StdModule::{Available,Unknown,Denied}`）+ `Vm::resolve_std_module` |
 | 文件系统（T7.5） | **默认无 `fs`**；只有 `Sandbox::with_fs_root(dir)`（CLI：`--fs-root DIR`）才注册，且所有路径被规范化到根目录内（`..`、绝对路径、符号链接、前缀混淆均拒绝），单次 I/O 有字节上限 | `builtins::fs::resolve_within` + 模块注册开关 |
-| 网络 | 未提供任何 API（`http` 明确不做，见决策 D9） | — |
+| 网络（M9 / D13） | `net`（TCP 客户端 + UDP）与 `http`（HTTP/1.1 + HTTP/2 + TLS）。**默认无网络**：只有宿主授予 `NetPolicy`（CLI：`--net-allow HOST[,…]`）才存在。授权后逐操作校验：主机/端口白名单、解析后地址（默认拒私有/保留段）、连接与读写硬超时、载荷字节上限、重定向默认不跟随且每跳重过白名单、禁 `https→http` 降级；UDP 绑定需单独开关，**无 TCP listen** | `builtins::std_module`（无策略 → `Unknown`）+ `Sandbox::allows_global`（裸名字 → `CapabilityDenied`）+ `ada_net::NetPolicy`（三层防线的唯一判定点）。详见 SPEC_STDLIB §3.7/§3.8 |
 | 内存 | `MemoryBudget`（近似、共享原子计数器）+ 大对象分配前预检查 | VM 指令 + 原生原型 + 迭代器物化 |
-| 时间/挂起 | 墙钟预算在指令循环与调度等待处检查；睡眠裁剪到剩余预算 | `Vm::check_wall_clock` |
+| 时间/挂起 | 墙钟预算在指令循环与调度等待处检查；睡眠裁剪到剩余预算；**网络等待同样计入**（不能靠发慢请求绕过 `max_wall_clock_ms`） | `Vm::check_wall_clock` + `Vm::wait_for_io_or_timer` |
 | 崩溃 | 脚本输入不再触发宿主 panic（M1 清零），敌意输入返回 `Err`；宿主回调 panic 由 `catch_unwind` 兜底（T1.7） | 11 条敌意用例 + `host_panic.rs` |
 
 ### 10.2 三档 profile 与用途 ✅
@@ -502,12 +506,14 @@ fn main() -> Result<(), ada_engine::Error> {
 | `strict()`（`Engine::new()` 默认） | 全局函数 + 迭代器 + 语言特性 + 任务；**无 `sleep_ms`**；模块均需 `import`（D12） | AI 生成代码的默认执行环境 |
 | `standard()` | strict + `sleep_ms`；模块仍均需 `import`（D12，沙箱不再决定模块可见性） | 需要时间/配置的宿主、CLI 默认档 |
 | `permissive()` | 全部 + `sleep_ms`；模块仍均需 `import` | 受信场景、兼容性开关、测试 |
-| 自定义 builder | `with_fs_root` 是唯一开启 `fs`（按根目录注册）的途径；其余模块靠 `import` | 业务按需授权 |
+| 自定义 builder | `with_fs_root` 是唯一开启 `fs`（按根目录注册）的途径；`with_net_policy` / `with_net_allowed_hosts` 是唯一开启网络（`net`/`http`）的途径；其余模块靠 `import` | 业务按需授权 |
 
 配套：`max_memory_bytes`（T5.3）、`max_wall_clock_ms`（T5.4）、`max_tasks`、`with_fs_root`（T7.5）、
+`with_net_policy` / `with_net_tls_config`（T9.2，网络授权与私有 CA）、
 `NativeModule`/`register_module`（T5.5）、
-安全测试集 `crates/ada_engine/tests/security.rs`（T5.6，21 用例）与
-`crates/ada_engine/tests/fs_sandbox.rs`（T7.5，10 用例）。
+安全测试集 `crates/ada_engine/tests/security.rs`（T5.6，21 用例）、
+`crates/ada_engine/tests/fs_sandbox.rs`（T7.5，10 用例）与
+`crates/ada_engine/tests/net_sandbox.rs`（T9.2，13 用例，全部 loopback）。
 
 ### 10.3 权限设计原则
 

@@ -54,9 +54,9 @@
 | 溢出 / 除零 / 字符串索引的算术语义 | [SPEC_RUNTIME §6](SPEC_RUNTIME.md#6-数值与算术语义) |
 | Fuel 熔断、超时、内存预算、错误类型 | [SPEC_RUNTIME §7–§8](SPEC_RUNTIME.md#7-fuel-与资源熔断) |
 | 如何把脚本嵌进 Rust（Engine / register_fn / FromValue） | [SPEC_RUNTIME §9](SPEC_RUNTIME.md#9-宿主嵌入-api) |
-| 沙箱权限分级、`env` 白名单 | [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型) |
+| 沙箱权限分级、`env` 白名单、网络授权 | [SPEC_RUNTIME §10](SPEC_RUNTIME.md#10-沙箱与权限模型) |
 | `println` / `len` / `to_int` 等全局函数清单 | [SPEC_STDLIB §2](SPEC_STDLIB.md#2-全局内置函数) |
-| `json` / `math` / `time` / `sys` / `env` 模块 API | [SPEC_STDLIB §3](SPEC_STDLIB.md#3-原生模块-native-modules) |
+| `json` / `math` / `time` / `sys` / `env` / `net` / `http` 模块 API | [SPEC_STDLIB §3](SPEC_STDLIB.md#3-原生模块-native-modules) |
 | `str.trim()` / `arr.push()` / `map.keys()` 等原型方法 | [SPEC_STDLIB §4](SPEC_STDLIB.md#4-原型方法-prototype-methods) |
 | `for..in` 支持哪些类型、`range` 是否惰性 | [SPEC_STDLIB §5](SPEC_STDLIB.md#5-统一迭代器协议) |
 | `map` / `filter` / `take` 等适配器 | [SPEC_STDLIB §6](SPEC_STDLIB.md#6-迭代器适配器) |

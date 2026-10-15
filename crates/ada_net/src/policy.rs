@@ -106,14 +106,15 @@ fn split_port(text: &str) -> Result<(&str, Option<u16>), NetError> {
         };
         return Ok((inside, port));
     }
-    match text.rsplit_once(':') {
-        // 多个冒号且没有方括号 → 裸 IPv6 字面量，不支持（要求写成 [::1]）。
-        Some((_, p)) if p.chars().all(|c| c.is_ascii_digit()) => {
-            Ok((&text[..text.len() - p.len() - 1], Some(parse_port(p, text)?)))
-        }
-        Some(_) => Err(NetError::Url(format!(
-            "bare IPv6 literals are not supported in host rules; write '[::1]:{text}'"
-        ))),
+    // 先按冒号数量区分形态：多于一个冒号且没有方括号 → 裸 IPv6 字面量（不支持）。
+    // 不这么判的话 `::1` 会被 `rsplit_once` 拆成 host `:` + port `1`。
+    if text.matches(':').count() > 1 {
+        return Err(NetError::Url(format!(
+            "bare IPv6 literals are not supported in host rules; write '[{text}]'"
+        )));
+    }
+    match text.split_once(':') {
+        Some((host, port)) => Ok((host, Some(parse_port(port, text)?))),
         None => Ok((text, None)),
     }
 }
@@ -413,5 +414,35 @@ mod tests {
             policy.check_payload(9),
             Err(NetError::TooLarge { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod rule_parsing_tests {
+    use super::*;
+
+    #[test]
+    fn a_bad_port_is_reported_as_a_port_problem_not_ipv6() {
+        let err = HostRule::parse("api.test:notaport").unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("invalid port"), "message: {message}");
+        assert!(!message.contains("IPv6"), "message: {message}");
+    }
+
+    #[test]
+    fn a_bare_ipv6_literal_is_rejected_with_a_hint() {
+        for text in ["::1", "2001:db8::1"] {
+            let err = HostRule::parse(text).unwrap_err();
+            assert!(err.to_string().contains("bare IPv6"), "{text}: {err}");
+        }
+        // 方括号形式是支持的
+        assert!(HostRule::parse("[2001:db8::1]:443").is_ok());
+    }
+
+    #[test]
+    fn rules_without_a_port_accept_any_port() {
+        let rule = HostRule::parse("api.test").unwrap();
+        assert!(rule.matches("api.test", 80));
+        assert!(rule.matches("api.test", 443));
     }
 }

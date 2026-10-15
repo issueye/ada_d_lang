@@ -126,9 +126,11 @@ fn main() -> Result<(), ada_engine::Error> {
 | `crates/ada_lexer` | 零拷贝分词器（含换行自闭合 ASI 与 `$"..."` 插值） |
 | `crates/ada_parser` | 递归下降 + Pratt 表达式分析器 |
 | `crates/ada_bytecode` | 寄存器式指令集与字节码编译器 |
+| `crates/ada_net` | 网络传输层（TCP/UDP/HTTP/HTTPS）；不依赖 VM，脚本侧模块在 `ada_vm` |
 | `crates/ada_vm` | 值模型、寄存器解释器、内置函数与 Fuel 熔断 |
 | `crates/ada_engine` | 面向 Rust 宿主的高层嵌入 API (`Engine`) |
-| `crates/ada_cli` | 命令行工具（run / eval / dump / repl） |
+| `crates/ada_lsp` | 最小 LSP 服务器（静态诊断：词法/语法/编译） |
+| `crates/ada_cli` | 命令行工具（run / eval / dump / check / repl） |
 
 ---
 

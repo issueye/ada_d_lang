@@ -205,8 +205,8 @@ println([1, 2, 3, 4].map(x => x * 10).filter(x => x > 20).collect())
 | 环境 | 默认允许 |
 | :--- | :--- |
 | 任何环境 | **全局函数**与迭代器适配器；**模块全部需显式 `import`**（T8.14，决策 D12） |
-| CLI（`ada`，本地受信） | 额外提供 `sleep_ms`；`fs` 需 `--fs-root DIR` |
-| Rust 宿主 `Engine::new()` | 不提供 `sleep_ms`（strict）；模块同样需 `import` |
+| CLI（`ada`，本地受信） | 额外提供 `sleep_ms`；`fs` 需 `--fs-root DIR`；**网络需 `--net-allow HOST[,…]`**（默认没有） |
+| Rust 宿主 `Engine::new()` | 不提供 `sleep_ms`（strict）；模块同样需 `import`；网络需 `Sandbox::with_net_policy` |
 
 ```ada run
 import json from "std:json"
@@ -220,6 +220,23 @@ println($"{to_int(1 < 2.5)}|{json.valid("{\"ok\": true}")}|{math.sqrt(144.0)}")
 
 - `import` 即**完全授权**（D12）：`import env from "std:env"` 后可读**全部**环境变量（`import fs` 仍需宿主根目录）。未导入时模块名不可用。
 - 宿主可用 `Sandbox::with_denied_module("env")` **全局否决**某模块（T8.15）：此时即使 `import` 也报 `CapabilityDenied`；默认不否决。
+- **网络默认不存在**（M9，决策 D13）：`net` / `http` 与 `fs` 同构，必须有宿主的显式授权。未授权时：
+
+  ```ada run
+  import net from "std:net"
+  net
+  ```
+
+  ```error
+  cannot import std module 'net'
+  ```
+
+  授权之后（CLI：`ada --net-allow api.example.com script.ada`）：
+  `net.tcp_connect(host, port)` 返回连接句柄，用 `conn.write` / `conn.read` / `conn.close`；
+  `http.get(url)` / `http.post(url, body)` / `http.request(method, url, body)` 返回响应 map
+  （`status` / `ok` / `body` / `headers` / `protocol` / `url`）。
+  **网络调用是挂起点**，所以 `spawn http.get(u)` 两次能真正并发。未进白名单的主机、私有地址段
+  （默认）、超时、超大响应体都会**报错**而不是静默失败。
 - **哈希**（纯计算，任何环境都可用）：`crypto.sha256(text)`、`crypto.hmac_sha256(key, text)`、`crypto.hex(text)`。
 
   ```ada run

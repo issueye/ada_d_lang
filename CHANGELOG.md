@@ -5,7 +5,42 @@
 
 ## [Unreleased]
 
+### Added
+
+- **网络能力（M9 / T9.1–T9.5，新决策 D13 推翻 D9）**：新增 `net`（TCP 客户端 + UDP）与
+  `http`（HTTP/1.1 与 HTTP/2，TLS 用 `rustls` + `ring`）。**默认没有任何网络**——
+  必须由宿主显式授予策略（`Sandbox::with_net_policy` / `with_net_allowed_hosts`；
+  CLI：`--net-allow HOST[,…]`），与 `fs` 完全同构：未授权时 `import net from "std:net"`
+  报未知模块、裸 `net` 报 `CapabilityDenied`；`with_denied_module` 仍然优先（T8.15）。
+  - **授予后逐层设防**：主机 + 端口白名单（`*.suffix` 只匹配子域）；解析后地址校验
+    （默认拒绝私有/保留地址段，防 DNS rebinding；连接用的是校验过的 `SocketAddr`）；
+    连接与读写**硬超时**；载荷**字节上限**（默认 1 MiB，超限即失败而非先分配）；
+    **重定向默认不跟随**，打开后每跳重新过白名单且禁止 `https → http` 降级；
+    UDP 绑定需单独开关；**不提供 TCP `listen`**。
+  - **网络调用是真正的挂起点**（T9.2）：复用 `sleep_ms` 的 `AsyncKind` 机制，因此
+    `spawn http.get(u)` 两次会真正并发（实测两个请求对 300ms 延迟的服务端总耗时 < 600ms），
+    网络等待同样计入墙钟预算。在迭代器适配器回调内部无法挂起，退化为同步执行
+    （与 `sleep_ms` 同构，见 SPEC_ASYNC §4.3）。
+  - **句柄不可伪造**：脚本没有字面量能构造 `Value::Async`，这些内部操作也不注册为全局名，
+    因此拿到连接句柄的唯一途径是 `tcp_connect` / `udp_bind` 的返回值。
+  - **TLS 只信任 webpki 公共根证书**；宿主可经 `Sandbox::with_net_tls_config` 注入私有 CA
+    （企业内网场景）。刻意**不提供**"跳过证书校验"的开关。TLS 后端固定 `ring`
+    （`aws-lc-rs` 需要 cmake + NASM，本机没有）。
+  - 新增 crate `ada_net`（不依赖 `ada_vm`，因此 hyper/tokio/rustls 的类型不渗进 VM 核心文件）；
+    Tokio 只承载 I/O，跑在独立驱动线程上，**字节码执行仍是单线程**（新决策 D14 修订 D2）。
+  - 测试：`ada_net` 29 例（含 HTTPS / HTTP2 / ALPN 回落 / 证书校验）、`ada_engine/tests/net_sandbox.rs`
+    13 例、`ada_cli/tests/net_cli.rs` 6 例——**全部走 loopback，不碰公网**。
+  - ⚠️ **已知限制**：`http` 响应体的 `body` 是 UTF-8 字符串，二进制响应会被 `U+FFFD`
+    替换（缺口 G-S14 → T9.6）；`status`/`len`/`headers` 不受影响。
+
 ### Changed
+
+- **决策 D2 被 D14 修订**：引擎内部改用 Tokio 承载网络 I/O。**宿主 API 不变**
+  （`Engine::eval` 仍全同步，`register_async_fn` 仍不存在），D2 的执行模型与调度
+  确定性也保留；变化的只是 `ada_vm` 新增了 tokio/hyper/rustls 依赖树。
+- **决策 D9（0.1.0 不提供网络）被 D13 推翻**：原 D9 的每条顾虑都改为可验证的强制点，
+  而不是靠"不提供"。文档同步更新：SPEC_STDLIB §3.7/§3.8、SPEC_RUNTIME §7.1/§10、
+  SPEC_ASYNC §4.3/§4.4/§5.5/§6、AI_GUIDE §9。
 
 - **破坏性：内置模块改为必须显式导入（T8.14，决策 D12）。** `json`/`math`/`crypto`/`time`/`sys`/`env`
   不再默认注册；脚本必须 `import json from "std:json"`（命名空间）或 `import { sqrt } from "std:math"`（具名）才能使用。

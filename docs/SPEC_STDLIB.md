@@ -1,7 +1,7 @@
 # Ada-D 标准库与迭代器规范 (Standard Library & Iterator Specification)
 
 > **版本**：1.0
-> **权威范围**：全局内置函数、原生模块（`json`/`math`/`time`/`sys`/`env`）、string/array/map 原型方法、**统一迭代器协议与适配器**、宿主模块扩展接口。
+> **权威范围**：全局内置函数、原生模块（`json`/`math`/`crypto`/`fs`/`time`/`sys`/`env`/`net`/`http`）、string/array/map 原型方法、**统一迭代器协议与适配器**、宿主模块扩展接口。
 > **不在此文档**：语言语法与相等/真值语义见 [SPEC_LANGUAGE.md](SPEC_LANGUAGE.md)；值的内部表示与错误类型见 [SPEC_RUNTIME.md](SPEC_RUNTIME.md)；`await_all`/`await_race` 的运行时语义见 [SPEC_ASYNC.md](SPEC_ASYNC.md)；路线图见 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md)。
 > **状态图例**：✅ 已实现 · ⚠️ 部分实现 / 行为与目标有偏差（附任务 ID）· 🚧 进行中 · 📋 计划中 · ❌ 不做
 
@@ -20,7 +20,7 @@
 
 所有**全局内置函数**在 VM 初始化时注入全局作用域，**无需 import**，任何作用域可直接调用。
 
-> ⚠️ 注意：**原生模块**（`json`/`math`/`crypto`/`time`/`sys`/`env`/`fs`）**必须显式导入**（T8.14，决策 D12），
+> ⚠️ 注意：**原生模块**（`json`/`math`/`crypto`/`time`/`sys`/`env`/`fs`/`net`/`http`）**必须显式导入**（T8.14，决策 D12），
 > 例如 `import json from "std:json"`；详见 §3。
 
 ### 2.1 I/O 与调试 ✅
@@ -175,6 +175,74 @@
 4. 单次读写受字节上限约束（取 1 MiB 与内存预算的较小者），目录列举条目数有上限。
 5. 越界路径**报错**而不是静默返回 `nil`/`false`（静默失败会把攻击伪装成"没事"）。
 6. 根目录不可用时，模块仍注册但每次调用都报 `fs root '…' is not an accessible directory`。
+
+### 3.7 `net` ✅（M9：**TCP 客户端 + UDP**，默认不暴露）
+
+| API | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `net.tcp_connect(host, port)` | ✅ | 连接并返回**连接句柄**（map）；失败按策略报错（白名单/私有地址/超时/连接失败） |
+| `conn.write(text)` | ✅ | 写出字符串，返回实际写出的字节数 |
+| `conn.read(max_bytes)` | ✅ | 读至多 `max_bytes` 字节并返回字符串；**对端关闭（EOF）返回 `nil`** |
+| `conn.close()` | ✅ | 关闭连接，返回 `true`；之后再用该句柄报 `NoSuchHandle` |
+| `net.udp_bind(port)` | ✅ | 绑定本地端口（`0` = 临时端口），返回 socket 句柄；`sock.port` 给出实际端口 |
+| `sock.send_to(host, port, text)` | ✅ | 发一个数据报（目标主机同样受白名单约束） |
+| `sock.recv_from(max_bytes)` | ✅ | 收一个数据报，返回 `{ data, sender }`（字段名是 `sender`：`from` 是保留字） |
+| `sock.close()` | ✅ | 关闭 socket |
+| `conn.handle` / `conn.kind` / `conn.peer` | ✅ | 句柄自省（诊断用）。**无法用于伪造句柄**，见下 |
+
+**只有宿主显式授予策略时模块才存在**（`Sandbox::with_net_policy(…)` / `with_net_allowed_hosts([…])`；
+CLI 为 `ada --net-allow HOST[,HOST…] …`）。默认三档 profile 都不暴露网络，脚本访问会得到
+`CapabilityDenied { name: "net" }`（与 `fs` 完全同构，决策 D13）。
+
+**网络调用是真正的挂起点**（M9 / T9.2）：`conn.read` 之类不阻塞宿主，可与其它任务交错，
+见 [SPEC_ASYNC §3](SPEC_ASYNC.md)。唯一的例外是迭代器适配器回调内部——那里退化为同步执行，
+已记录在 [SPEC_ASYNC §4.3](SPEC_ASYNC.md)。
+
+**句柄不可伪造**：脚本没有任何字面量能构造 `Value::Async`，而 `TcpRead` 这些内部操作
+也从不注册为全局名。拿到句柄的唯一途径是 `tcp_connect` / `udp_bind` 的返回值，因此
+"随手编一个 id 去读写别人的连接"这条路不存在。
+
+### 3.8 `http` ✅（M9：**HTTP/1.1 与 HTTP/2**，默认不暴露）
+
+| API | 状态 | 说明 |
+| :--- | :--- | :--- |
+| `http.get(url [, headers])` | ✅ | GET。`headers` 为 `map[string, string]` |
+| `http.post(url, body [, headers])` | ✅ | POST（`body` 为字符串） |
+| `http.request(method, url, body [, headers])` | ✅ | 通用形式；`method` ∈ `GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD` |
+
+响应是一个 map：
+
+| 字段 | 说明 |
+| :--- | :--- |
+| `status` | HTTP 状态码（`int`） |
+| `ok` | 是否 2xx（`bool`） |
+| `headers` | 响应头 map（键小写；同名头合并为逗号分隔） |
+| `body` | 响应体（`string`） |
+| `len` | 响应体字节数 |
+| `protocol` | 协商结果：`"h2"` 或 `"http/1.1"` |
+| `url` | 跟随重定向后的最终 URL |
+
+⚠️ **`body` 是 UTF-8 字符串**（非 UTF-8 字节按 `U+FFFD` 替换）。二进制响应的**原始字节**
+访问尚不可用，登记为缺口 G-S14。`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`
+四个头由传输层负责，脚本传入会被忽略。
+
+安全约束（实现见 `crates/ada_net`，测试见 `crates/ada_engine/tests/net_sandbox.rs`、
+`crates/ada_net/tests/{transport,https}.rs`）：
+
+1. **主机 + 端口白名单**，大小写不敏感；`*.suffix` 只匹配子域（不匹配 `suffix` 本身，也不匹配
+   `notsuffix`）。空白名单 = 全拒绝。
+2. **解析后地址校验**：默认拒绝私有/保留地址段（含回环、链路本地、CGNAT、文档段、组播与保留段，
+   逐条对应 IANA 登记表）。连接用的是**校验过的那个 `SocketAddr`**，不让 OS 重新解析——
+   避免 DNS rebinding 在"校验"与"连接"之间换掉结果。
+3. **硬超时**：连接与单次读写各有上限；运行时还对所有操作整体包一层上界，保证
+   **每个操作都会在有限时间内结算**（这是 VM 调度器不把它误判成死锁的前提）。
+4. **载荷字节上限**（默认 1 MiB）：响应体超限**立刻失败**，而不是先读进内存再检查。
+5. **重定向默认不跟随**。打开后每一跳都要**重新过白名单**，且禁止 `https → http` 降级。
+6. **TLS 用 `rustls` + `ring` 后端**，只信任 webpki 公共根证书。宿主可经
+   `Sandbox::with_net_tls_config` 注入私有 CA；**刻意不提供"跳过证书校验"的开关**。
+7. **UDP 绑定需单独开关**（`NetPolicy::allow_bind`）：绑定本地端口带服务端性质，默认关闭。
+   本轮**不提供 TCP `listen`**（脚本不能开监听端口）。
+8. 越权一律**报错**而不是静默失败。
 
 ---
 
@@ -398,6 +466,7 @@ engine.register_module(MyToolModule::new());
 | G-S11 | `NativeModule` 与模块注册接口不存在 | ✅ 已修复（M5）：`NativeModule` trait + `Engine::register_module`（冲突报 `ModuleConflict`） | ✅ T5.5 |
 | G-S12 | 适配器结果为即时求值（非惰性），大区间会先物化 | ⚠️ 已按决策 D3 = A 记录 | 后续评估惰性链 |
 | G-S13 | map 上 `len`/`keys` 等原型方法名遮蔽同名键（`{len: 9}.len` → `1`） | ✅ 已修复（T7.5）：统一为**自有键优先**，与 `m["len"]` 一致；`fs.remove` 被遮蔽的真实缺陷促成了该决定（见 §4.4） | ✅ T7.5 |
+| G-S14 | `http` 响应体只有 UTF-8 字符串形式，二进制响应会被 `U+FFFD` 替换 | 📋 见 §3.8；`status`/`len`/`headers` 仍然可用，因此"拿到长度与状态码"是可靠的 | 📋 T9.6 |
 
 ---
 
